@@ -40,10 +40,10 @@ const MIGRATIONS = [
         month TEXT NOT NULL,
         hour  INTEGER NOT NULL,
         weekday INTEGER NOT NULL
-      )`,
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_once ON plays(track_id, started_at)`,
-      `CREATE INDEX IF NOT EXISTS idx_plays_month ON plays(month)`,
-      `CREATE INDEX IF NOT EXISTS idx_plays_day ON plays(day)`,
+      );`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_once ON plays(track_id, started_at);`,
+      `CREATE INDEX IF NOT EXISTS idx_plays_month ON plays(month);`,
+      `CREATE INDEX IF NOT EXISTS idx_plays_day ON plays(day);`,
     ],
   },
 ];
