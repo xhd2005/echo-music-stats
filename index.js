@@ -205,9 +205,16 @@ const QUERY_TOP_SONGS = `SELECT title, artist, COUNT(*) AS plays, SUM(played_ms)
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY title, artist ORDER BY plays DESC LIMIT 20`;
 
-const QUERY_TREND = `SELECT day, SUM(played_ms) AS ms, COUNT(*) AS plays
+const QUERY_TREND_DAY = `SELECT day AS bucket, SUM(played_ms) AS ms, COUNT(*) AS plays
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY day ORDER BY day`;
+
+const QUERY_TREND_MONTH = `SELECT month AS bucket, SUM(played_ms) AS ms, COUNT(*) AS plays
+  FROM plays WHERE started_at >= ? AND started_at < ?
+  GROUP BY month ORDER BY month`;
+
+// 趋势粒度：短区间按天，长区间（今年/全部）按月
+const trendGranularity = (key) => (key === 'year' || key === 'all' ? 'month' : 'day');
 
 const QUERY_HOURS = `SELECT hour, COUNT(*) AS plays, SUM(played_ms) AS ms
   FROM plays WHERE started_at >= ? AND started_at < ?
@@ -223,17 +230,52 @@ const runQuery = async (dbHandle, sql, params) => {
   return res.rows || [];
 };
 
-const queryReport = async (dbHandle, range) => {
+const queryReport = async (dbHandle, range, granularity) => {
   const params = [range.start, range.end];
+  const trendSql = granularity === 'month' ? QUERY_TREND_MONTH : QUERY_TREND_DAY;
   const [kpiRows, topArtists, topSongs, trend, hours, sources] = await Promise.all([
     runQuery(dbHandle, QUERY_KPI, params),
     runQuery(dbHandle, QUERY_TOP_ARTISTS, params),
     runQuery(dbHandle, QUERY_TOP_SONGS, params),
-    runQuery(dbHandle, QUERY_TREND, params),
+    runQuery(dbHandle, trendSql, params),
     runQuery(dbHandle, QUERY_HOURS, params),
     runQuery(dbHandle, QUERY_SOURCES, params),
   ]);
   return { kpi: kpiRows[0] || null, topArtists, topSongs, trend, hours, sources };
+};
+
+// ---- 数据备份（导出 / 导入） ----
+
+// 备份只导出「源数据」列；派生列（day/month/hour/weekday）导入时按 started_at 重算，保证与采集一致
+const QUERY_BACKUP = `SELECT track_id, title, artist, album, source, duration, played_ms, started_at
+  FROM plays ORDER BY started_at`;
+
+const IMPORT_SQL = `INSERT OR IGNORE INTO plays
+  (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+// 单行 → 插入参数（派生列由 started_at 重算）；无效行返回 null
+const importRowToParams = (row) => {
+  const startedAt = Number(row?.started_at);
+  const trackId = String(row?.track_id ?? '').trim();
+  const title = String(row?.title ?? '').trim();
+  if (!trackId || !title || !Number.isFinite(startedAt)) return null;
+  const d = new Date(startedAt);
+  const day = formatDay(d);
+  return [
+    trackId,
+    title,
+    String(row?.artist ?? '').trim(),
+    String(row?.album ?? '').trim(),
+    String(row?.source ?? '').trim(),
+    Number(row?.duration) || 0,
+    Number(row?.played_ms) || 0,
+    startedAt,
+    day,
+    day.slice(0, 7),
+    d.getHours(),
+    d.getDay(),
+  ];
 };
 
 // ---- 音源标签与配色（实体 → 固定色，不随排名变化） ----
@@ -264,7 +306,7 @@ const daysElapsedThisYear = () => {
 const mostActiveMonth = (trend) => {
   const map = new Map();
   for (const row of trend) {
-    const month = String(row.day || '').slice(0, 7);
+    const month = String(row.bucket || '').slice(0, 7);
     if (!month) continue;
     map.set(month, (map.get(month) || 0) + (Number(row.ms) || 0));
   }
@@ -290,6 +332,27 @@ const CSS = `
   flex-direction: column;
   padding: 0 32px 40px;
   gap: 20px;
+}
+
+/* 卡片网格：窄屏单列，桌面端两两并排 */
+.mst-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.mst-grid > .mst-full {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 880px) {
+  .mst-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mst-grid .mst-chart-scroll svg {
+    min-width: 0;
+  }
 }
 
 .mst-header {
@@ -698,6 +761,12 @@ const CSS = `
   width: 132px;
 }
 
+.mst-backup-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .mst-danger-zone {
   border: 1px solid color-mix(in srgb, #ef4444 32%, transparent);
   border-radius: 16px;
@@ -754,11 +823,11 @@ const renderTrendChart = (h, rows) => {
 
   const xLabels =
     n <= 1
-      ? [{ x: xAt(0), label: String(rows[0]?.day ?? '') }]
+      ? [{ x: xAt(0), label: String(rows[0]?.bucket ?? '') }]
       : [
-          { x: xAt(0), label: String(rows[0]?.day ?? '') },
-          { x: xAt(Math.floor((n - 1) / 2)), label: String(rows[Math.floor((n - 1) / 2)]?.day ?? '') },
-          { x: xAt(n - 1), label: String(rows[n - 1]?.day ?? '') },
+          { x: xAt(0), label: String(rows[0]?.bucket ?? '') },
+          { x: xAt(Math.floor((n - 1) / 2)), label: String(rows[Math.floor((n - 1) / 2)]?.bucket ?? '') },
+          { x: xAt(n - 1), label: String(rows[n - 1]?.bucket ?? '') },
         ];
 
   return h('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': '听歌时长趋势' }, [
@@ -888,7 +957,7 @@ const createReportPage = (ctx) => {
         loading.value = true;
         error.value = '';
         try {
-          report.value = await queryReport(db, getRangeMs(range.value));
+          report.value = await queryReport(db, getRangeMs(range.value), trendGranularity(range.value));
         } catch (err) {
           console.warn('[music-stats] 查询报告失败:', err);
           error.value = '读取统计失败，请稍后重试';
@@ -903,6 +972,7 @@ const createReportPage = (ctx) => {
       return () => {
         const data = report.value;
         const isEmpty = !data || !data.kpi || Number(data.kpi.n) === 0;
+        const isMonthly = range.value === 'year' || range.value === 'all';
 
         // 年度报告派生
         let annual = null;
@@ -1002,51 +1072,54 @@ const createReportPage = (ctx) => {
                         kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`),
                       ]),
 
-                      // 趋势
-                      data.trend.length > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(Icon, ctx.icons.iconClock, '听歌时长趋势'),
-                            h('p', { class: 'mst-card-sub' }, '按天聚合实听时长'),
-                            h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
-                          ])
-                        : null,
+                      // 卡片区：趋势整行，其余两两并排
+                      h('div', { class: 'mst-grid' }, [
+                        // 趋势（整行）
+                        data.trend.length > 0
+                          ? h('div', { class: 'mst-card mst-full' }, [
+                              sectionTitle(Icon, ctx.icons.iconClock, '听歌时长趋势'),
+                              h('p', { class: 'mst-card-sub' }, isMonthly ? '按月聚合实听时长' : '按天聚合实听时长'),
+                              h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
+                            ])
+                          : null,
 
-                      // Top 歌手
-                      data.topArtists.length > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(Icon, ctx.icons.iconTrophy, 'Top 歌手'),
-                            h('p', { class: 'mst-card-sub' }, '按累计实听时长降序'),
-                            renderArtistBars(h, data.topArtists),
-                          ])
-                        : null,
+                        // Top 歌手
+                        data.topArtists.length > 0
+                          ? h('div', { class: 'mst-card' }, [
+                              sectionTitle(Icon, ctx.icons.iconTrophy, 'Top 歌手'),
+                              h('p', { class: 'mst-card-sub' }, '按累计实听时长降序'),
+                              renderArtistBars(h, data.topArtists),
+                            ])
+                          : null,
 
-                      // Top 歌曲
-                      data.topSongs.length > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(Icon, ctx.icons.iconMusic, 'Top 歌曲'),
-                            h('p', { class: 'mst-card-sub' }, '按播放次数降序'),
-                            renderSongList(h, data.topSongs),
-                          ])
-                        : null,
+                        // Top 歌曲
+                        data.topSongs.length > 0
+                          ? h('div', { class: 'mst-card' }, [
+                              sectionTitle(Icon, ctx.icons.iconMusic, 'Top 歌曲'),
+                              h('p', { class: 'mst-card-sub' }, '按播放次数降序'),
+                              renderSongList(h, data.topSongs),
+                            ])
+                          : null,
 
-                      // 时段分布
-                      h('div', { class: 'mst-card' }, [
-                        sectionTitle(Icon, ctx.icons.iconClock, '每日时段分布'),
-                        h('p', { class: 'mst-card-sub' }, '按播放次数统计（0–23 点）'),
-                        h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
+                        // 时段分布
+                        h('div', { class: 'mst-card' }, [
+                          sectionTitle(Icon, ctx.icons.iconClock, '每日时段分布'),
+                          h('p', { class: 'mst-card-sub' }, '按播放次数统计（0–23 点）'),
+                          h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
+                        ]),
+
+                        // 音源占比
+                        sourceItems.total > 0
+                          ? h('div', { class: 'mst-card' }, [
+                              sectionTitle(Icon, ctx.icons.iconCloud, '音源占比'),
+                              h('p', { class: 'mst-card-sub' }, '按播放次数统计'),
+                              h('div', { class: 'mst-donut-wrap' }, [
+                                renderDonut(h, sourceItems.items, sourceItems.total),
+                                renderSourceLegend(h, sourceItems.items, sourceItems.total),
+                              ]),
+                            ])
+                          : null,
                       ]),
-
-                      // 音源占比
-                      sourceItems.total > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(Icon, ctx.icons.iconCloud, '音源占比'),
-                            h('p', { class: 'mst-card-sub' }, '按播放次数统计'),
-                            h('div', { class: 'mst-donut-wrap' }, [
-                              renderDonut(h, sourceItems.items, sourceItems.total),
-                              renderSourceLegend(h, sourceItems.items, sourceItems.total),
-                            ]),
-                          ])
-                        : null,
                     ],
               ]),
           }),
@@ -1142,6 +1215,7 @@ const createSettingsPanel = (ctx) => {
       const enabled = ref(true);
       const minSeconds = ref(DEFAULT_MIN_SECONDS);
       const confirmClear = ref(false);
+      const busy = ref(false);
       let clearTimer = null;
 
       onMounted(async () => {
@@ -1202,6 +1276,109 @@ const createSettingsPanel = (ctx) => {
 
       const options = MIN_SECONDS_OPTIONS.map((v) => ({ label: `${v} 秒`, value: v }));
 
+      const exportData = async () => {
+        if (!db) {
+          ctx.toast.danger('本地数据库未就绪');
+          return;
+        }
+        busy.value = true;
+        try {
+          const res = await db.all(QUERY_BACKUP);
+          if (!res.ok) throw new Error(res.error || '查询失败');
+          const rows = res.rows || [];
+          if (rows.length === 0) {
+            ctx.toast.danger('暂无数据可导出');
+            return;
+          }
+          const payload = JSON.stringify(
+            {
+              format: 'music-stats-backup',
+              version: 1,
+              exportedAt: new Date().toISOString(),
+              count: rows.length,
+              rows,
+            },
+            null,
+            2,
+          );
+          const blob = new Blob([payload], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `music-stats-backup-${formatDay()}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          ctx.toast.success(`已导出 ${rows.length} 条记录（保存到下载文件夹）`);
+        } catch (error) {
+          console.warn('[music-stats] 导出数据失败:', error);
+          ctx.toast.danger('导出失败，请重试');
+        } finally {
+          busy.value = false;
+        }
+      };
+
+      const importData = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = () => {
+          const file = input.files && input.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => void handleImportText(String(reader.result || ''));
+          reader.onerror = () => ctx.toast.danger('读取文件失败');
+          reader.readAsText(file);
+        };
+        input.click();
+      };
+
+      const handleImportText = async (text) => {
+        let rows;
+        try {
+          const parsed = JSON.parse(text);
+          rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.rows) ? parsed.rows : null;
+        } catch (error) {
+          ctx.toast.danger('导入失败：文件不是有效的备份 JSON');
+          return;
+        }
+        if (!rows) {
+          ctx.toast.danger('导入失败：备份中没有记录');
+          return;
+        }
+        if (!db) {
+          ctx.toast.danger('本地数据库未就绪');
+          return;
+        }
+        busy.value = true;
+        try {
+          const statements = [];
+          let skipped = 0;
+          for (const row of rows) {
+            const params = importRowToParams(row);
+            if (params) statements.push({ sql: IMPORT_SQL, params });
+            else skipped += 1;
+          }
+          if (statements.length === 0) {
+            ctx.toast.danger('导入失败：没有可用记录');
+            return;
+          }
+          // 宿主单次事务上限 500 条，分批执行
+          for (let i = 0; i < statements.length; i += 500) {
+            const res = await db.transaction(statements.slice(i, i + 500));
+            if (!res.ok) throw new Error(res.error || '写入失败');
+          }
+          const skippedText = skipped > 0 ? `，跳过 ${skipped} 条无效` : '';
+          ctx.toast.success(`已导入 ${statements.length} 条记录（重复自动跳过）${skippedText}`);
+        } catch (error) {
+          console.warn('[music-stats] 导入数据失败:', error);
+          ctx.toast.danger('导入失败，请重试');
+        } finally {
+          busy.value = false;
+        }
+      };
+
       return () =>
         h('div', { class: 'mst-settings' }, [
           h('div', { class: 'mst-setting-row' }, [
@@ -1223,6 +1400,16 @@ const createSettingsPanel = (ctx) => {
               class: 'mst-setting-select',
               disabled: !loaded.value,
             }),
+          ]),
+          h('div', { class: 'mst-setting-row' }, [
+            h('div', { class: 'mst-setting-copy' }, [
+              h('div', { class: 'mst-setting-label' }, '数据备份'),
+              h('div', { class: 'mst-setting-hint' }, '卸载插件会删除本机数据，卸载前建议先导出备份'),
+            ]),
+            h('div', { class: 'mst-backup-actions' }, [
+              h(Button, { size: 'sm', onClick: exportData, disabled: busy.value }, { default: () => '导出' }),
+              h(Button, { size: 'sm', variant: 'outline', onClick: importData, disabled: busy.value }, { default: () => '导入' }),
+            ]),
           ]),
           h('div', { class: 'mst-danger-zone' }, [
             h('div', { class: 'mst-setting-copy', style: { marginBottom: '12px' } }, [
