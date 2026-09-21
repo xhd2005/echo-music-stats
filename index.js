@@ -502,16 +502,487 @@ const CSS = `
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
 
 .mst-page {
   display: flex;
   flex-direction: column;
-  padding: 0 32px 40px;
-  gap: 20px;
+  padding: 20px 32px 48px;
+  gap: 22px;
+  max-width: 1440px;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
 
-/* 卡片网格：窄屏单列，桌面端两两并排 */
+/* 页头与导航条 */
+.mst-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border-radius: 18px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.05);
+  backdrop-filter: blur(12px);
+}
+
+.mst-header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.mst-header-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 32%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary, #31cfa1);
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
+}
+
+.mst-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mst-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mst-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  color: var(--color-text-main, #f8fafc);
+  line-height: 1.2;
+}
+
+.mst-privacy-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 650;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent);
+  color: var(--color-primary, #31cfa1);
+  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent);
+}
+
+.mst-subtitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+}
+
+/* 工具栏与时间范围筛选条 */
+.mst-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mst-segmented {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  gap: 2px;
+}
+
+.mst-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  border-radius: 9px;
+  padding: 6px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.mst-seg-btn:hover {
+  color: var(--color-text-main, #f8fafc);
+  background: var(--control-hover-bg, rgba(148, 163, 184, 0.12));
+}
+
+.mst-seg-btn.active {
+  background: var(--color-primary, #31cfa1);
+  color: var(--color-on-primary, #0f172a);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary, #31cfa1) 36%, transparent);
+}
+
+.mst-btn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
+  color: var(--color-text-main, #f8fafc);
+  border-radius: 11px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.mst-btn-action:hover {
+  border-color: var(--color-primary, #31cfa1);
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent);
+  color: var(--color-primary, #31cfa1);
+}
+
+/* 自定义日期筛选条 */
+.mst-custom-range {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  border: 1px dashed var(--border-subtle, rgba(148, 163, 184, 0.2));
+  flex-wrap: wrap;
+  animation: mstFadeIn 0.2s ease-out;
+}
+
+.mst-date-input {
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
+  color: var(--color-text-main, #f8fafc);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.mst-date-input:focus {
+  border-color: var(--color-primary, #31cfa1);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
+}
+
+/* KPI 卡片网格 */
+.mst-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1180px) {
+  .mst-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .mst-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.mst-kpi {
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  border-radius: 16px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
+  padding: 16px 18px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s, box-shadow 0.2s;
+  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.04);
+}
+
+.mst-kpi:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+  box-shadow: 0 6px 18px -3px rgba(0, 0, 0, 0.08);
+}
+
+.mst-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mst-kpi-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+}
+
+.mst-kpi-icon {
+  font-size: 15px;
+  opacity: 0.85;
+}
+
+.mst-kpi-value {
+  font-size: 25px;
+  font-weight: 850;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-main, #f8fafc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.15;
+}
+
+.mst-kpi-meter {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.mst-kpi-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary, #31cfa1);
+  transition: width 0.4s ease;
+}
+
+.mst-kpi-meter-fill.is-skip {
+  background: #f43f5e;
+}
+
+.mst-kpi-sub {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.65));
+}
+
+/* 年度报告高光卡片 */
+.mst-annual {
+  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 32%, transparent);
+  border-radius: 20px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent) 0%, color-mix(in srgb, #6366f1 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.08))) 100%);
+  padding: 22px 24px;
+  box-shadow: 0 8px 30px -6px color-mix(in srgb, var(--color-primary, #31cfa1) 15%, transparent);
+}
+
+.mst-annual-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.mst-annual-head-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mst-annual-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 850;
+  letter-spacing: -0.01em;
+  color: var(--color-primary, #31cfa1);
+}
+
+.mst-annual-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
+  color: var(--color-primary, #31cfa1);
+}
+
+.mst-annual-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 768px) {
+  .mst-annual-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mst-annual-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg-elevated, #fff) 50%, transparent);
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  min-width: 0;
+}
+
+.mst-annual-item-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+}
+
+.mst-annual-item-value {
+  font-size: 15px;
+  font-weight: 850;
+  color: var(--color-text-main, #f8fafc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 神曲循环与夜间专属双高亮卡 */
+.mst-highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 720px) {
+  .mst-highlight-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mst-highlight-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.05);
+}
+
+.mst-highlight-card.loop {
+  background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)) 100%);
+  border-color: color-mix(in srgb, #f59e0b 25%, transparent);
+}
+
+.mst-highlight-card.night {
+  background: linear-gradient(135deg, color-mix(in srgb, #8b5cf6 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)) 100%);
+  border-color: color-mix(in srgb, #8b5cf6 25%, transparent);
+}
+
+.mst-highlight-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.1);
+}
+
+.mst-highlight-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mst-highlight-tag {
+  font-size: 11px;
+  font-weight: 750;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mst-highlight-card.loop .mst-highlight-tag {
+  color: #f59e0b;
+}
+
+.mst-highlight-card.night .mst-highlight-tag {
+  color: #a78bfa;
+}
+
+.mst-highlight-title {
+  font-size: 16px;
+  font-weight: 850;
+  color: var(--color-text-main, #f8fafc);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.mst-highlight-title:hover {
+  color: var(--color-primary, #31cfa1);
+}
+
+.mst-highlight-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mst-highlight-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+}
+
+.mst-play-circle-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
+  color: var(--color-text-main, #f8fafc);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mst-play-circle-btn:hover {
+  background: var(--color-primary, #31cfa1);
+  color: var(--color-on-primary, #0f172a);
+  border-color: var(--color-primary, #31cfa1);
+  transform: scale(1.08);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+}
+
+/* 卡片网格布局 */
 .mst-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -523,7 +994,7 @@ const CSS = `
   grid-column: 1 / -1;
 }
 
-@media (min-width: 880px) {
+@media (min-width: 960px) {
   .mst-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -532,139 +1003,55 @@ const CSS = `
   }
 }
 
-.mst-header {
+/* 通用容器卡片 */
+.mst-card {
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  border-radius: 18px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  padding: 20px 22px;
+  min-width: 0;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.04);
+}
+
+.mst-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 20px;
+  margin-bottom: 14px;
 }
 
-.mst-header-left {
+.mst-card-head-left {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 0;
 }
 
-.mst-header-icon {
+.mst-card-icon-pill {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 14%, transparent);
   color: var(--color-primary, #31cfa1);
-  flex-shrink: 0;
-}
-
-.mst-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  color: var(--color-text-main, #f8fafc);
-}
-
-.mst-subtitle {
-  margin: 2px 0 0;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.6;
-}
-
-/* 时间范围筛选条 + 刷新 */
-.mst-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.mst-chip {
-  border: 1px solid var(--control-border, rgba(148, 163, 184, 0.2));
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.mst-chip:hover {
-  background: var(--control-hover-bg, rgba(148, 163, 184, 0.16));
-}
-
-.mst-chip-active {
-  border-color: var(--color-primary, #31cfa1);
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 16%, transparent);
-  color: var(--color-primary, #31cfa1);
-}
-
-.mst-refresh {
-  margin-left: auto;
-}
-
-/* KPI 卡片 */
-.mst-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.mst-kpi {
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
-  border-radius: 18px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
-  padding: 16px 18px;
-  min-width: 0;
-}
-
-.mst-kpi-value {
-  font-size: 24px;
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  color: var(--color-text-main, #f8fafc);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.mst-kpi-label {
-  margin-top: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.6;
-}
-
-/* 通用卡片 */
-.mst-card {
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
-  border-radius: 18px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
-  padding: 18px;
-  min-width: 0;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .mst-card-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 4px;
-  font-size: 14px;
-  font-weight: 900;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
   color: var(--color-text-main, #f8fafc);
-}
-
-.mst-card-title-icon {
-  color: var(--color-primary, #31cfa1);
-  flex-shrink: 0;
+  letter-spacing: -0.01em;
 }
 
 .mst-card-sub {
-  margin: 0 0 14px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.6;
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.75));
 }
 
 .mst-chart-scroll {
@@ -676,58 +1063,275 @@ const CSS = `
   min-width: 480px;
 }
 
-/* 年度报告高亮卡 */
-.mst-annual {
-  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 34%, transparent);
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.08)));
-  padding: 20px;
-}
-
-.mst-annual-head {
+/* 365天热力图 */
+.mst-heatmap-stats {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
-.mst-annual-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 900;
+.mst-stat-tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 8px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+}
+
+.mst-stat-tag strong {
+  color: var(--color-primary, #31cfa1);
+  font-weight: 850;
+}
+
+.mst-heatmap-wrap {
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.mst-heatmap-wrap svg {
+  display: block;
+  min-width: 780px;
+}
+
+.mst-heatmap-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.08));
+  font-size: 11px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
+}
+
+.mst-heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mst-heatmap-legend-box {
+  width: 10.5px;
+  height: 10.5px;
+  border-radius: 2.5px;
+}
+
+/* 24小时音乐生物钟 */
+.mst-circadian-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 800px) {
+  .mst-circadian-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.mst-circadian-card {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.mst-circadian-card.period-morning {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
+  border-color: rgba(245, 158, 11, 0.18);
+}
+.mst-circadian-card.period-work {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
+  border-color: rgba(14, 165, 233, 0.18);
+}
+.mst-circadian-card.period-dusk {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
+  border-color: rgba(244, 63, 94, 0.18);
+}
+.mst-circadian-card.period-night {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
+  border-color: rgba(139, 92, 246, 0.18);
+}
+
+.mst-circadian-card.mst-peak {
+  box-shadow: 0 4px 18px -2px color-mix(in srgb, var(--color-primary, #31cfa1) 22%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 45%, transparent);
+}
+
+.mst-circadian-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mst-circadian-name {
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--color-text-main, #f8fafc);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mst-circadian-peak-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--color-primary, #31cfa1);
+  color: var(--color-on-primary, #0f172a);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+}
+
+.mst-circadian-time {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.75));
+}
+
+.mst-circadian-percent {
+  font-size: 22px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-main, #f8fafc);
+}
+
+.mst-circadian-bar-bg {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  overflow: hidden;
+}
+
+.mst-circadian-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.period-morning .mst-circadian-bar-fill { background: #f59e0b; }
+.period-work .mst-circadian-bar-fill { background: #0ea5e9; }
+.period-dusk .mst-circadian-bar-fill { background: #f43f5e; }
+.period-night .mst-circadian-bar-fill { background: #8b5cf6; }
+
+.mst-circadian-plays {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+}
+
+/* 听歌个性成就徽章 */
+.mst-badges-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .mst-badges-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 540px) {
+  .mst-badges-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mst-badge-card {
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.mst-badge-card.unlocked {
+  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 38%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary, #31cfa1) 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05)) 100%);
+  box-shadow: 0 4px 14px -3px color-mix(in srgb, var(--color-primary, #31cfa1) 15%, transparent);
+}
+
+.mst-badge-card.locked {
+  opacity: 0.6;
+  filter: grayscale(0.5);
+  border-style: dashed;
+}
+
+.mst-badge-card:hover {
+  transform: translateY(-2px);
+}
+
+.mst-badge-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
+  flex-shrink: 0;
+}
+
+.unlocked .mst-badge-icon {
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 18%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent);
+}
+
+.mst-badge-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mst-badge-title {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--color-text-main, #f8fafc);
+}
+
+.mst-badge-desc {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
+  line-height: 1.3;
+}
+
+.mst-badge-status {
+  font-size: 10.5px;
+  font-weight: 750;
+  margin-top: 2px;
+}
+
+.unlocked .mst-badge-status {
   color: var(--color-primary, #31cfa1);
 }
 
-.mst-annual-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 20px;
+.locked .mst-badge-status {
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
 }
 
-.mst-annual-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.mst-annual-item-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.7;
-}
-
-.mst-annual-item-value {
-  font-size: 14px;
-  font-weight: 900;
-  color: var(--color-text-main, #f8fafc);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Top 歌手横向条形 */
+/* Top 歌手横向排行 */
 .mst-bars {
   display: flex;
   flex-direction: column;
@@ -736,14 +1340,45 @@ const CSS = `
 
 .mst-bar-row {
   display: grid;
-  grid-template-columns: 96px 1fr 72px;
+  grid-template-columns: 24px 100px 1fr 76px;
   align-items: center;
   gap: 12px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+
+.mst-bar-row.no-rank {
+  grid-template-columns: 110px 1fr 76px;
+}
+
+.mst-bar-row:hover {
+  background: var(--control-hover-bg, rgba(148, 163, 184, 0.08));
+}
+
+.mst-bar-rank {
+  font-size: 12px;
+  font-weight: 850;
+  text-align: center;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+}
+
+.mst-rank-1 {
+  color: #f59e0b;
+  font-weight: 900;
+}
+.mst-rank-2 {
+  color: #94a3b8;
+  font-weight: 900;
+}
+.mst-rank-3 {
+  color: #d97706;
+  font-weight: 900;
 }
 
 .mst-bar-name {
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 750;
   color: var(--color-text-main, #f8fafc);
   white-space: nowrap;
   overflow: hidden;
@@ -751,52 +1386,90 @@ const CSS = `
 }
 
 .mst-bar-track {
-  height: 12px;
+  height: 8px;
   border-radius: 999px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
   overflow: hidden;
 }
 
 .mst-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--color-primary, #31cfa1);
+  background: linear-gradient(90deg, var(--color-primary, #31cfa1), #38bdf8);
+  transition: width 0.35s ease;
 }
 
 .mst-bar-val {
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  font-size: 11.5px;
+  font-weight: 750;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
   text-align: right;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Top 歌曲列表 */
+.mst-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+}
+
+.mst-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.mst-tab-btn:hover {
+  color: var(--color-text-main, #f8fafc);
+}
+
+.mst-tab-btn.active {
+  background: var(--color-bg-elevated, #fff);
+  color: var(--color-primary, #31cfa1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
 .mst-songs {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 .mst-song-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 4px;
-  border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  padding: 8px 10px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+  position: relative;
 }
 
-.mst-song-row:last-child {
-  border-bottom: none;
+.mst-song-row:hover {
+  background: var(--control-hover-bg, rgba(148, 163, 184, 0.1));
 }
 
 .mst-song-rank {
   width: 24px;
   flex-shrink: 0;
   font-size: 12px;
-  font-weight: 900;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  font-weight: 850;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
   text-align: center;
-  opacity: 0.7;
 }
 
 .mst-song-main {
@@ -804,7 +1477,7 @@ const CSS = `
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
 
 .mst-song-title {
@@ -814,13 +1487,17 @@ const CSS = `
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 0.15s;
+}
+
+.mst-song-row:hover .mst-song-title {
+  color: var(--color-primary, #31cfa1);
 }
 
 .mst-song-artist {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.6;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -829,10 +1506,32 @@ const CSS = `
 .mst-song-meta {
   flex-shrink: 0;
   text-align: right;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  font-size: 11.5px;
+  font-weight: 750;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.mst-song-play-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-primary, #31cfa1);
+  color: var(--color-on-primary, #0f172a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.mst-song-row:hover .mst-song-play-icon {
+  opacity: 1;
+  transform: scale(1);
 }
 
 /* 音源 donut + 图例 */
@@ -841,6 +1540,7 @@ const CSS = `
   align-items: center;
   gap: 24px;
   flex-wrap: wrap;
+  padding: 6px 0 14px;
 }
 
 .mst-legend {
@@ -855,6 +1555,13 @@ const CSS = `
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 0.12s;
+}
+
+.mst-legend-item:hover {
+  background: var(--control-hover-bg, rgba(148, 163, 184, 0.08));
 }
 
 .mst-legend-dot {
@@ -867,7 +1574,7 @@ const CSS = `
 .mst-legend-label {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
   color: var(--color-text-main, #f8fafc);
   white-space: nowrap;
@@ -876,10 +1583,11 @@ const CSS = `
 }
 
 .mst-legend-val {
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  font-size: 11.5px;
+  font-weight: 750;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 空态 / 加载 / 错误 */
@@ -888,15 +1596,15 @@ const CSS = `
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 64px 24px;
+  gap: 14px;
+  padding: 72px 24px;
   color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
   text-align: center;
 }
 
 .mst-state p {
   margin: 0;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 700;
 }
 
@@ -904,14 +1612,19 @@ const CSS = `
 .mst-settings {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
+  max-width: 780px;
 }
 
 .mst-setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
 }
 
 .mst-setting-copy {
@@ -922,16 +1635,15 @@ const CSS = `
 }
 
 .mst-setting-label {
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 13.5px;
+  font-weight: 800;
   color: var(--color-text-main, #f8fafc);
 }
 
 .mst-setting-hint {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  opacity: 0.6;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
 }
 
 .mst-setting-select {
@@ -942,255 +1654,27 @@ const CSS = `
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .mst-danger-zone {
-  border: 1px solid color-mix(in srgb, #ef4444 32%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
   border-radius: 16px;
   background: color-mix(in srgb, #ef4444 6%, transparent);
-  padding: 14px 16px;
+  padding: 16px 18px;
 }
 
-/* 365天热力图 */
-.mst-heatmap-wrap {
-  overflow-x: auto;
-  padding: 8px 0;
+/* 动效 */
+@keyframes mstFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-.mst-heatmap-wrap svg {
-  display: block;
-  min-width: 760px;
+@keyframes mstSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
-.mst-heatmap-legend {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-}
-.mst-heatmap-legend-box {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-}
-
-/* 24小时音乐生物钟 */
-.mst-circadian-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-top: 10px;
-}
-.mst-circadian-card {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
-  border-radius: 14px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  position: relative;
-  overflow: hidden;
-}
-.mst-circadian-card.mst-peak {
-  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)));
-}
-.mst-circadian-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.mst-circadian-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--color-text-main, #f8fafc);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.mst-circadian-peak-badge {
-  font-size: 10px;
-  font-weight: 800;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--color-primary, #31cfa1);
-  color: #000;
-}
-.mst-circadian-time {
-  font-size: 11px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-}
-.mst-circadian-percent {
-  font-size: 18px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
-}
-.mst-circadian-bar-bg {
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(148, 163, 184, 0.15);
-  overflow: hidden;
-}
-.mst-circadian-bar-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--color-primary, #31cfa1);
-  transition: width 0.3s ease;
-}
-
-/* 听歌个性成就徽章 */
-.mst-badges-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-top: 10px;
-}
-.mst-badge-card {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
-  border-radius: 14px;
-  padding: 12px 14px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  transition: all 0.2s;
-}
-.mst-badge-card.unlocked {
-  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 35%, transparent);
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 6%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05)));
-}
-.mst-badge-card.locked {
-  opacity: 0.55;
-  filter: grayscale(0.6);
-}
-.mst-badge-icon {
-  font-size: 24px;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.1));
-}
-.mst-badge-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-.mst-badge-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--color-text-main, #f8fafc);
-}
-.mst-badge-desc {
-  font-size: 11px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-}
-.mst-badge-status {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--color-primary, #31cfa1);
-}
-
-/* 单曲神曲高亮卡片 */
-.mst-highlight-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-.mst-highlight-card {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.07));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  border-radius: 16px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.mst-highlight-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.mst-highlight-tag {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--color-primary, #31cfa1);
-}
-.mst-highlight-title {
-  font-size: 15px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mst-highlight-sub {
-  font-size: 12px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-}
-
-/* Tab 切换按钮 */
-.mst-tabs {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-.mst-tab-btn {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.mst-tab-btn.active {
-  background: var(--color-primary, #31cfa1);
-  color: #000;
-  border-color: var(--color-primary, #31cfa1);
-}
-
-/* 自定义日期筛选 */
-.mst-custom-range {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-.mst-date-input {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
-  color: var(--color-text-main, #f8fafc);
-  border-radius: 8px;
-  padding: 4px 8px;
-  font-size: 12px;
-  outline: none;
-}
-
-@media (max-width: 640px) {
-  .mst-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .mst-annual-grid {
-    grid-template-columns: 1fr;
-  }
-  .mst-circadian-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .mst-badges-grid {
-    grid-template-columns: 1fr;
-  }
-  .mst-highlight-grid {
-    grid-template-columns: 1fr;
-  }
+.mst-spin {
+  animation: mstSpin 0.9s linear infinite;
 }
 `;
 
@@ -1240,18 +1724,29 @@ const renderTrendChart = (h, rows) => {
           { x: xAt(n - 1), label: String(rows[n - 1]?.bucket ?? '') },
         ];
 
+  const gradId = 'mst-trend-grad';
   return h('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': '听歌时长趋势' }, [
+    h('defs', null, [
+      h('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' }, [
+        h('stop', { offset: '0%', 'stop-color': 'var(--color-primary, #31cfa1)', 'stop-opacity': '0.32' }),
+        h('stop', { offset: '100%', 'stop-color': 'var(--color-primary, #31cfa1)', 'stop-opacity': '0' }),
+      ]),
+    ]),
     ...gridTicks.map((t) => [
-      h('line', { x1: PAD_L, x2: W - PAD_R, y1: t.y, y2: t.y, 'stroke-width': 1, style: { stroke: chartGrid } }),
-      h('text', { x: PAD_L - 8, y: t.y + 4, 'font-size': 10, 'text-anchor': 'end', style: { fill: chartText } }, t.label),
+      h('line', { x1: PAD_L, x2: W - PAD_R, y1: t.y, y2: t.y, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.5, style: { stroke: chartGrid } }),
+      h('text', { x: PAD_L - 8, y: t.y + 4, 'font-size': 10.5, 'text-anchor': 'end', style: { fill: chartText } }, t.label),
     ]).flat(),
     areaPath
-      ? h('path', { d: areaPath, stroke: 'none', style: { fill: 'color-mix(in srgb, var(--color-primary, #31cfa1) 14%, transparent)' } })
+      ? h('path', { d: areaPath, stroke: 'none', fill: `url(#${gradId})` })
       : null,
-    h('path', { d: linePath, fill: 'none', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', style: { stroke: chartStroke } }),
-    ...pts.map((p) => h('circle', { cx: p.x, cy: p.y, r: 3, style: { fill: chartStroke } })),
+    h('path', { d: linePath, fill: 'none', 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', style: { stroke: chartStroke } }),
+    ...pts.map((p, i) =>
+      h('circle', { cx: p.x, cy: p.y, r: 3.5, style: { fill: chartStroke, cursor: 'pointer' } }, [
+        h('title', null, `${rows[i]?.bucket}: ${formatMsShort(Number(rows[i]?.ms) || 0)}`),
+      ]),
+    ),
     ...xLabels.map((l) =>
-      h('text', { x: l.x, y: H - 10, 'font-size': 10, 'text-anchor': 'middle', style: { fill: chartText } }, l.label),
+      h('text', { x: l.x, y: H - 8, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, l.label),
     ),
   ]);
 };
@@ -1276,16 +1771,20 @@ const renderHourChart = (h, rows) => {
     const val = byHour.get(hour) || 0;
     const hgt = val > 0 ? Math.max(2, (val / maxPlays) * innerH) : 0;
     const x = PAD_L + hour * slot + (slot - barW) / 2;
+    const isPeak = val === maxPlays && val > 0;
     bars.push(
       h('rect', {
         x: x.toFixed(1),
         y: (PAD_T + innerH - hgt).toFixed(1),
         width: barW.toFixed(1),
         height: hgt.toFixed(1),
-        rx: 2,
-        opacity: val > 0 ? 0.85 : 0.18,
-        style: { fill: chartStroke },
-      }),
+        rx: 3,
+        ry: 3,
+        opacity: isPeak ? 1 : val > 0 ? 0.8 : 0.15,
+        style: { fill: chartStroke, cursor: 'pointer' },
+      }, [
+        h('title', null, `${hour}:00 - ${hour}:59: ${val} 次播放`),
+      ]),
     );
   }
 
@@ -1295,9 +1794,9 @@ const renderHourChart = (h, rows) => {
   }));
 
   return h('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': '每日时段分布' }, [
-    h('line', { x1: PAD_L, x2: W - PAD_R, y1: PAD_T + innerH, y2: PAD_T + innerH, 'stroke-width': 1, style: { stroke: chartGrid } }),
+    h('line', { x1: PAD_L, x2: W - PAD_R, y1: PAD_T + innerH, y2: PAD_T + innerH, 'stroke-width': 1, style: { stroke: chartGrid, opacity: 0.6 } }),
     ...bars,
-    ...ticks.map((t) => h('text', { x: t.x, y: H - 8, 'font-size': 10, 'text-anchor': 'middle', style: { fill: chartText } }, t.label)),
+    ...ticks.map((t) => h('text', { x: t.x, y: H - 8, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, t.label)),
   ]);
 };
 
@@ -1331,8 +1830,8 @@ const renderDonut = (h, segments, total) => {
         style: { stroke: sourceColor(arc.label) },
       }),
     ),
-    h('text', { x: c, y: c - 2, 'font-size': 20, 'font-weight': 900, 'text-anchor': 'middle', style: { fill: 'var(--color-text-main, #f8fafc)' } }, String(total)),
-    h('text', { x: c, y: c + 16, 'font-size': 10, 'text-anchor': 'middle', style: { fill: chartText } }, '次播放'),
+    h('text', { x: c, y: c - 2, 'font-size': 22, 'font-weight': 850, 'text-anchor': 'middle', style: { fill: 'var(--color-text-main, #f8fafc)' } }, String(total)),
+    h('text', { x: c, y: c + 16, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, '总播放次数'),
   ]);
 };
 
@@ -1352,10 +1851,22 @@ const renderHeatmapChart = (h, rows) => {
     curr.setDate(curr.getDate() + 1);
   }
 
-  const cellSize = 11;
-  const gap = 3;
-  const padL = 36;
-  const padT = 20;
+  let activeDays = 0;
+  let totalYearPlays = 0;
+  let totalYearMs = 0;
+  rows.forEach((r) => {
+    const p = Number(r.plays) || 0;
+    if (p > 0) {
+      activeDays += 1;
+      totalYearPlays += p;
+      totalYearMs += Number(r.ms) || 0;
+    }
+  });
+
+  const cellSize = 11.5;
+  const gap = 3.5;
+  const padL = 34;
+  const padT = 22;
   const weeks = Math.ceil(days.length / 7);
   const totalW = padL + weeks * (cellSize + gap) + 10;
   const totalH = padT + 7 * (cellSize + gap) + 16;
@@ -1387,11 +1898,11 @@ const renderHeatmapChart = (h, rows) => {
       );
     }
 
-    let fillColor = 'rgba(148, 163, 184, 0.08)';
+    let fillColor = 'rgba(148, 163, 184, 0.09)';
     if (plays >= 12) fillColor = 'var(--color-primary, #31cfa1)';
-    else if (plays >= 6) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 75%, transparent)';
-    else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent)';
-    else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent)';
+    else if (plays >= 6) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent)';
+    else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 52%, transparent)';
+    else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent)';
 
     rects.push(
       h(
@@ -1401,7 +1912,7 @@ const renderHeatmapChart = (h, rows) => {
           y: padT + row * (cellSize + gap),
           width: cellSize,
           height: cellSize,
-          rx: 2,
+          rx: 2.5,
           style: { fill: fillColor, cursor: 'pointer' },
         },
         [
@@ -1421,7 +1932,7 @@ const renderHeatmapChart = (h, rows) => {
       {
         x: padL - 8,
         y: padT + w.row * (cellSize + gap) + 9,
-        'font-size': 9,
+        'font-size': 9.5,
         'text-anchor': 'end',
         style: { fill: chartText },
       },
@@ -1429,26 +1940,45 @@ const renderHeatmapChart = (h, rows) => {
     ),
   );
 
-  return h('div', { class: 'mst-heatmap-wrap' }, [
-    h(
-      'svg',
-      {
-        viewBox: `0 0 ${totalW} ${totalH}`,
-        width: totalW,
-        height: totalH,
-        role: 'img',
-        'aria-label': '365天听歌热力图',
-      },
-      [...monthLabels, ...weekLabels, ...rects],
-    ),
-    h('div', { class: 'mst-heatmap-legend' }, [
-      h('span', null, '少'),
-      h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.08);' }),
-      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent);' }),
-      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent);' }),
-      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 75%, transparent);' }),
-      h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--color-primary, #31cfa1);' }),
-      h('span', null, '多'),
+  return h('div', null, [
+    h('div', { class: 'mst-heatmap-stats' }, [
+      h('div', { class: 'mst-stat-tag' }, [
+        h('span', null, '累计活跃：'),
+        h('strong', null, `${activeDays} 天`),
+      ]),
+      h('div', { class: 'mst-stat-tag' }, [
+        h('span', null, '年度总播放：'),
+        h('strong', null, `${totalYearPlays} 次`),
+      ]),
+      h('div', { class: 'mst-stat-tag' }, [
+        h('span', null, '累计实听：'),
+        h('strong', null, formatMsShort(totalYearMs)),
+      ]),
+    ]),
+    h('div', { class: 'mst-heatmap-wrap' }, [
+      h(
+        'svg',
+        {
+          viewBox: `0 0 ${totalW} ${totalH}`,
+          width: totalW,
+          height: totalH,
+          role: 'img',
+          'aria-label': '365天听歌热力图',
+        },
+        [...monthLabels, ...weekLabels, ...rects],
+      ),
+    ]),
+    h('div', { class: 'mst-heatmap-footer' }, [
+      h('span', null, '提示：鼠标悬停任意色块可查看当日听歌次数与实听时长'),
+      h('div', { class: 'mst-heatmap-legend' }, [
+        h('span', null, '少'),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.09);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 52%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--color-primary, #31cfa1);' }),
+        h('span', null, '多'),
+      ]),
     ]),
   ]);
 };
@@ -1469,10 +1999,10 @@ const renderCircadianClock = (h, rows) => {
   const total = Math.max(1, morning + work + dusk + night);
 
   const periods = [
-    { id: 'morning', name: '清晨启程', time: '06:00 - 11:00', icon: '🌅', plays: morning },
-    { id: 'work', name: '专注工作', time: '11:00 - 18:00', icon: '💼', plays: work },
-    { id: 'dusk', name: '暮光晚霞', time: '18:00 - 22:00', icon: '🌆', plays: dusk },
-    { id: 'night', name: '深夜漫游', time: '22:00 - 06:00', icon: '🌌', plays: night },
+    { id: 'morning', name: '清晨启程', time: '06:00 - 11:00', icon: '🌅', plays: morning, cls: 'period-morning' },
+    { id: 'work', name: '专注工作', time: '11:00 - 18:00', icon: '💼', plays: work, cls: 'period-work' },
+    { id: 'dusk', name: '暮光晚霞', time: '18:00 - 22:00', icon: '🌆', plays: dusk, cls: 'period-dusk' },
+    { id: 'night', name: '深夜漫游', time: '22:00 - 06:00', icon: '🌌', plays: night, cls: 'period-night' },
   ];
 
   const maxPlays = Math.max(1, ...periods.map((p) => p.plays));
@@ -1483,21 +2013,21 @@ const renderCircadianClock = (h, rows) => {
       const isPeak = p.plays === maxPlays && p.plays > 0;
       return h(
         'div',
-        { class: ['mst-circadian-card', isPeak ? 'mst-peak' : ''] },
+        { class: ['mst-circadian-card', p.cls, isPeak ? 'mst-peak' : ''] },
         [
           h('div', { class: 'mst-circadian-head' }, [
             h('span', { class: 'mst-circadian-name' }, [
               h('span', null, p.icon),
               h('span', null, p.name),
             ]),
-            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '峰值') : null,
+            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '✦ 峰值活跃') : null,
           ]),
           h('div', { class: 'mst-circadian-time' }, p.time),
           h('div', { class: 'mst-circadian-percent' }, `${pct}%`),
           h('div', { class: 'mst-circadian-bar-bg' }, [
             h('div', { class: 'mst-circadian-bar-fill', style: { width: `${pct}%` } }),
           ]),
-          h('div', { class: 'mst-card-sub', style: 'margin: 0;' }, `${p.plays} 次播放`),
+          h('div', { class: 'mst-circadian-plays' }, `${p.plays} 次播放`),
         ],
       );
     }),
@@ -1603,7 +2133,7 @@ const renderBadges = (h, data) => {
           h(
             'div',
             { class: 'mst-badge-status' },
-            b.unlocked ? '已达成 ✦' : '未达成 🔒',
+            b.unlocked ? '已点亮 ✦' : '未解锁 🔒',
           ),
         ]),
       ]),
@@ -1616,52 +2146,90 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
   if (!loopSong && !nightSong) return null;
   return h('div', { class: 'mst-highlight-grid' }, [
     loopSong
-      ? h('div', { class: 'mst-highlight-card' }, [
-          h('div', { class: 'mst-highlight-head' }, [
-            h('span', { class: 'mst-highlight-tag' }, '🔥 单日单曲循环神曲'),
-            h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, loopSong.day),
-          ]),
-          h(
-            'div',
-            {
-              class: 'mst-highlight-title',
-              style: 'cursor: pointer;',
-              title: '点击播放',
-              onClick: () => {
-                if (ctx?.player?.play && loopSong.track_id) void ctx.player.play(loopSong.track_id);
+      ? h('div', { class: 'mst-highlight-card loop' }, [
+          h('div', { class: 'mst-highlight-main' }, [
+            h('div', { class: 'mst-highlight-tag' }, [
+              h('span', null, '🔥'),
+              h('span', null, '单日循环神曲'),
+              h('span', { class: 'mst-highlight-pill' }, loopSong.day),
+            ]),
+            h(
+              'div',
+              {
+                class: 'mst-highlight-title',
+                title: '点击播放此歌曲',
+                onClick: () => {
+                  if (loopSong.track_id) {
+                    if (ctx?.player?.playTrack) void ctx.player.playTrack(loopSong.track_id);
+                    else if (ctx?.player?.play) void ctx.player.play(loopSong.track_id);
+                  }
+                },
               },
-            },
-            String(loopSong.title),
-          ),
-          h(
-            'div',
-            { class: 'mst-highlight-sub' },
-            `${loopSong.artist} · 单日循环 ${loopSong.daily_plays} 次`,
-          ),
+              String(loopSong.title),
+            ),
+            h(
+              'div',
+              { class: 'mst-highlight-sub' },
+              `${loopSong.artist} · 单日高频循环 ${loopSong.daily_plays} 次`,
+            ),
+          ]),
+          loopSong.track_id
+            ? h(
+                'button',
+                {
+                  class: 'mst-play-circle-btn',
+                  title: '立即播放',
+                  onClick: () => {
+                    if (ctx?.player?.playTrack) void ctx.player.playTrack(loopSong.track_id);
+                    else if (ctx?.player?.play) void ctx.player.play(loopSong.track_id);
+                  },
+                },
+                [h('span', { style: 'font-size: 13px; margin-left: 2px;' }, '▶')],
+              )
+            : null,
         ])
       : null,
     nightSong
-      ? h('div', { class: 'mst-highlight-card' }, [
-          h('div', { class: 'mst-highlight-head' }, [
-            h('span', { class: 'mst-highlight-tag' }, '🌌 深夜灵魂单曲 (00:00-06:00)'),
-          ]),
-          h(
-            'div',
-            {
-              class: 'mst-highlight-title',
-              style: 'cursor: pointer;',
-              title: '点击播放',
-              onClick: () => {
-                if (ctx?.player?.play && nightSong.track_id) void ctx.player.play(nightSong.track_id);
+      ? h('div', { class: 'mst-highlight-card night' }, [
+          h('div', { class: 'mst-highlight-main' }, [
+            h('div', { class: 'mst-highlight-tag' }, [
+              h('span', null, '🌌'),
+              h('span', null, '深夜灵魂单曲 (00:00-06:00)'),
+            ]),
+            h(
+              'div',
+              {
+                class: 'mst-highlight-title',
+                title: '点击播放此歌曲',
+                onClick: () => {
+                  if (nightSong.track_id) {
+                    if (ctx?.player?.playTrack) void ctx.player.playTrack(nightSong.track_id);
+                    else if (ctx?.player?.play) void ctx.player.play(nightSong.track_id);
+                  }
+                },
               },
-            },
-            String(nightSong.title),
-          ),
-          h(
-            'div',
-            { class: 'mst-highlight-sub' },
-            `${nightSong.artist} · 深夜播放 ${nightSong.night_plays} 次`,
-          ),
+              String(nightSong.title),
+            ),
+            h(
+              'div',
+              { class: 'mst-highlight-sub' },
+              `${nightSong.artist} · 深夜静听 ${nightSong.night_plays} 次`,
+            ),
+          ]),
+          nightSong.track_id
+            ? h(
+                'button',
+                {
+                  class: 'mst-play-circle-btn',
+                  title: '立即播放',
+                  onClick: () => {
+                    if (ctx?.player?.playTrack) void ctx.player.playTrack(nightSong.track_id);
+                    else if (ctx?.player?.play) void ctx.player.play(nightSong.track_id);
+                  },
+                },
+                [h('span', { style: 'font-size: 13px; margin-left: 2px;' }, '▶')],
+              )
+            : null,
         ])
       : null,
   ]);
@@ -1678,25 +2246,39 @@ const renderQualityAndEffects = (h, qualities, effects) => {
     hires: 'Hi-Res 高解析',
     viper_atmos: '杜比全景声',
   };
+  const qualityColorMap = {
+    hires: '#f59e0b',
+    flac: '#06b6d4',
+    viper_atmos: '#a855f7',
+    '320k': '#10b981',
+    '128k': '#94a3b8',
+  };
   const effectMap = {
     vinyl: '黑胶唱机',
     pure_vocal: '纯净人声',
     surround: '全景环绕',
     bass: '超重低音',
   };
+  const effectColorMap = {
+    vinyl: '#f43f5e',
+    pure_vocal: '#0ea5e9',
+    surround: '#8b5cf6',
+    bass: '#f59e0b',
+  };
 
   return h('div', { class: 'mst-bars' }, [
     qualities.length > 0
       ? [
-          h('div', { class: 'mst-card-title', style: 'font-size: 13px;' }, '音质分布'),
+          h('div', { class: 'mst-card-title', style: 'font-size: 13px; margin-top: 10px;' }, '音质分布画像'),
           ...qualities.slice(0, 4).map((q) => {
             const plays = Number(q.plays || 0);
             const pct = totalQ > 0 ? Math.round((plays / totalQ) * 100) : 0;
             const label = qualityMap[q.quality] || q.quality;
-            return h('div', { class: 'mst-bar-row', key: q.quality }, [
+            const barColor = qualityColorMap[q.quality] || 'var(--color-primary, #31cfa1)';
+            return h('div', { class: 'mst-bar-row no-rank', key: q.quality }, [
               h('span', { class: 'mst-bar-name', title: label }, label),
               h('div', { class: 'mst-bar-track' }, [
-                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%` } }),
+                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%`, background: barColor } }),
               ]),
               h('span', { class: 'mst-bar-val' }, `${pct}% (${plays}次)`),
             ]);
@@ -1710,10 +2292,11 @@ const renderQualityAndEffects = (h, qualities, effects) => {
             const plays = Number(e.plays || 0);
             const pct = totalE > 0 ? Math.round((plays / totalE) * 100) : 0;
             const label = effectMap[e.effect] || e.effect;
-            return h('div', { class: 'mst-bar-row', key: e.effect }, [
+            const barColor = effectColorMap[e.effect] || '#818cf8';
+            return h('div', { class: 'mst-bar-row no-rank', key: e.effect }, [
               h('span', { class: 'mst-bar-name', title: label }, label),
               h('div', { class: 'mst-bar-track' }, [
-                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%`, background: '#818cf8' } }),
+                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%`, background: barColor } }),
               ]),
               h('span', { class: 'mst-bar-val' }, `${pct}% (${plays}次)`),
             ]);
@@ -1730,10 +2313,18 @@ const createReportPage = (ctx) => {
     ctx.vue;
   const PageScrollContainer = defineAsyncComponent(ctx.ui.components.PageScrollContainer);
 
-  const sectionTitle = (Icon, icon, text) =>
-    h('div', { class: 'mst-card-title' }, [
-      h(Icon, { icon, width: 16, height: 16, class: 'mst-card-title-icon' }),
-      h('span', null, text),
+  const sectionTitle = (Icon, icon, title, sub, extra) =>
+    h('div', { class: 'mst-card-head' }, [
+      h('div', { class: 'mst-card-head-left' }, [
+        h('div', { class: 'mst-card-icon-pill' }, [
+          h(Icon, { icon, width: 16, height: 16 }),
+        ]),
+        h('div', null, [
+          h('h3', { class: 'mst-card-title' }, title),
+          sub ? h('p', { class: 'mst-card-sub' }, sub) : null,
+        ]),
+      ]),
+      extra || null,
     ]);
 
   return defineComponent({
@@ -1805,42 +2396,51 @@ const createReportPage = (ctx) => {
             // 页头
             h('div', { class: 'mst-header' }, [
               h('div', { class: 'mst-header-left' }, [
-                h(Icon, { icon: ctx.icons.iconPulse, width: 26, height: 26, class: 'mst-header-icon' }),
-                h('div', null, [
-                  h('h1', { class: 'mst-title' }, '听歌统计'),
-                  h('p', { class: 'mst-subtitle' }, '数据仅保存在本机，无任何上传'),
+                h('div', { class: 'mst-header-icon-box' }, [
+                  h(Icon, { icon: ctx.icons.iconPulse, width: 22, height: 22 }),
+                ]),
+                h('div', { class: 'mst-header-info' }, [
+                  h('div', { class: 'mst-title-row' }, [
+                    h('h1', { class: 'mst-title' }, '听歌数据画像'),
+                    h('span', { class: 'mst-privacy-badge' }, [
+                      h(Icon, { icon: ctx.icons.iconShield || ctx.icons.iconCheck, width: 12, height: 12 }),
+                      h('span', null, '纯本地存储 · 零隐私上传'),
+                    ]),
+                  ]),
+                  h('p', { class: 'mst-subtitle' }, '全方位回溯你的音乐足迹、聆听习惯与时空偏好'),
                 ]),
               ]),
-            ]),
-
-            // 时间范围 + 刷新
-            h('div', { class: 'mst-toolbar' }, [
-              ...RANGE_OPTIONS.map((opt) =>
+              // 工具栏：分段选择器 + 刷新按钮
+              h('div', { class: 'mst-toolbar' }, [
+                h('div', { class: 'mst-segmented' }, [
+                  ...RANGE_OPTIONS.map((opt) =>
+                    h(
+                      'button',
+                      {
+                        key: opt.key,
+                        class: ['mst-seg-btn', range.value === opt.key ? 'active' : ''],
+                        onClick: () => {
+                          range.value = opt.key;
+                        },
+                      },
+                      opt.label,
+                    ),
+                  ),
+                ]),
                 h(
                   'button',
-                  {
-                    key: opt.key,
-                    class: ['mst-chip', range.value === opt.key ? 'mst-chip-active' : ''],
-                    onClick: () => {
-                      range.value = opt.key;
-                    },
-                  },
-                  opt.label,
+                  { class: 'mst-btn-action', onClick: load, title: '刷新统计数据' },
+                  [
+                    h(Icon, { icon: ctx.icons.iconRefreshCw, width: 13, height: 13, class: loading.value ? 'mst-spin' : '' }),
+                    '刷新',
+                  ],
                 ),
-              ),
-              h(
-                'button',
-                { class: 'mst-chip mst-refresh', onClick: load },
-                [
-                  h(Icon, { icon: ctx.icons.iconRefreshCw, width: 12, height: 12, style: { verticalAlign: '-2px', marginRight: '4px' } }),
-                  '刷新',
-                ],
-              ),
+              ]),
             ]),
 
             range.value === 'custom'
               ? h('div', { class: 'mst-custom-range' }, [
-                  h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, '起止日期：'),
+                  h('span', { class: 'mst-card-sub', style: 'margin: 0; font-weight: 700;' }, '自定义时间区间：'),
                   h('input', {
                     type: 'date',
                     class: 'mst-date-input',
@@ -1860,21 +2460,31 @@ const createReportPage = (ctx) => {
                   }),
                   h(
                     'button',
-                    { class: 'mst-tab-btn active', onClick: load },
-                    '查询',
+                    { class: 'mst-btn-action', style: 'padding: 5px 12px;', onClick: load },
+                    '应用筛选',
                   ),
                 ])
               : null,
 
             loading.value && !data
-              ? h('div', { class: 'mst-card' }, [h('div', { class: 'mst-state' }, [h('p', null, '加载中…')])])
+              ? h('div', { class: 'mst-card' }, [
+                  h('div', { class: 'mst-state' }, [
+                    h(Icon, { icon: ctx.icons.iconRefreshCw, width: 36, height: 36, class: 'mst-spin', style: 'color: var(--color-primary, #31cfa1);' }),
+                    h('p', null, '正在深入解析听歌数据…'),
+                  ]),
+                ])
               : error.value && !data
-                ? h('div', { class: 'mst-card' }, [h('div', { class: 'mst-state' }, [h('p', null, error.value)])])
+                ? h('div', { class: 'mst-card' }, [
+                    h('div', { class: 'mst-state' }, [
+                      h(Icon, { icon: ctx.icons.iconTriangleAlert || ctx.icons.iconInfo, width: 44, height: 44, style: 'color: #f43f5e;' }),
+                      h('p', null, error.value),
+                    ]),
+                  ])
                 : isEmpty
                   ? h('div', { class: 'mst-card' }, [
                       h('div', { class: 'mst-state' }, [
-                        h(Icon, { icon: ctx.icons.iconMusic, width: 56, height: 56 }),
-                        h('p', null, '这段时间还没有记录，去听首歌吧'),
+                        h(Icon, { icon: ctx.icons.iconMusic, width: 56, height: 56, style: 'opacity: 0.5;' }),
+                        h('p', null, '所选时间区间内暂无听歌记录，放首歌静静聆听吧'),
                       ]),
                     ])
                   : [
@@ -1882,41 +2492,40 @@ const createReportPage = (ctx) => {
                       annual
                         ? h('div', { class: 'mst-annual' }, [
                             h('div', { class: 'mst-annual-head' }, [
-                              h(Icon, { icon: ctx.icons.iconStar, width: 20, height: 20 }),
-                              h('h2', { class: 'mst-annual-title' }, '年度报告'),
+                              h('div', { class: 'mst-annual-head-left' }, [
+                                h(Icon, { icon: ctx.icons.iconSparkles || ctx.icons.iconStar, width: 22, height: 22 }),
+                                h('h2', { class: 'mst-annual-title' }, '年度音乐足迹报告'),
+                              ]),
+                              h('span', { class: 'mst-annual-badge' }, `${new Date().getFullYear()} 年度专属`),
                             ]),
                             h('div', { class: 'mst-annual-grid' }, [
-                              annualItem(h, '今年总时长', formatMsShort(annual.totalMs)),
-                              annualItem(h, '今年总播放', `${annual.totalPlays} 次`),
-                              annualItem(h, '最爱歌手', annual.topArtist || '—'),
-                              annualItem(h, '最爱歌曲', annual.topSong || '—'),
-                              annualItem(h, '最活跃月份', annual.activeMonth || '—'),
-                              annualItem(h, '平均每天', formatMsShort(annual.avgPerDay)),
+                              annualItem(h, '年度实听总时长', formatMsShort(annual.totalMs)),
+                              annualItem(h, '年度总播放次数', `${annual.totalPlays} 次`),
+                              annualItem(h, '年度最爱歌手', annual.topArtist || '—'),
+                              annualItem(h, '年度最爱单曲', annual.topSong || '—'),
+                              annualItem(h, '最活跃音乐月份', annual.activeMonth ? `${annual.activeMonth} 月` : '—'),
+                              annualItem(h, '日均听歌时长', formatMsShort(annual.avgPerDay)),
                             ]),
                           ])
                         : null,
 
-                      // KPI
-                      h('div', { class: 'mst-kpis' }, [
-                        kpiCard(h, '总听歌时长', formatMsShort(Number(data.kpi.ms) || 0)),
-                        kpiCard(h, '总播放次数', `${Number(data.kpi.n) || 0} 次`),
-                        kpiCard(
-                          h,
-                          '完播率',
-                          Number(data.kpi.n) > 0
-                            ? `${Math.round(((Number(data.kpi.completed_count) || 0) / Number(data.kpi.n)) * 100)}%`
-                            : '0%',
-                        ),
-                        kpiCard(
-                          h,
-                          '切歌跳过率',
-                          Number(data.kpi.n) > 0
-                            ? `${Math.round(((Number(data.kpi.skipped_count) || 0) / Number(data.kpi.n)) * 100)}%`
-                            : '0%',
-                        ),
-                        kpiCard(h, '去重歌曲', `${Number(data.kpi.songs) || 0} 首`),
-                        kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`),
-                      ]),
+                      // KPI 核心指标卡片
+                      (() => {
+                        const totalPlays = Number(data.kpi.n) || 0;
+                        const compCount = Number(data.kpi.completed_count) || 0;
+                        const skipCount = Number(data.kpi.skipped_count) || 0;
+                        const compPct = totalPlays > 0 ? Math.round((compCount / totalPlays) * 100) : 0;
+                        const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
+
+                        return h('div', { class: 'mst-kpis' }, [
+                          kpiCard(h, '累计听歌时长', formatMsShort(Number(data.kpi.ms) || 0), '⏱️', '有效实听时长'),
+                          kpiCard(h, '累计播放次数', `${totalPlays} 次`, '🎵', '达标计入次数'),
+                          kpiCard(h, '完播率', `${compPct}%`, '🎧', `${compCount} 次完整听完`, compPct, false),
+                          kpiCard(h, '切歌跳过率', `${skipPct}%`, '⏭️', `${skipCount} 次快速跳过`, skipPct, true),
+                          kpiCard(h, '去重曲目', `${Number(data.kpi.songs) || 0} 首`, '🎼', '收听不同单曲'),
+                          kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`, '🎤', '探索音乐人谱系'),
+                        ]);
+                      })(),
 
                       // 神曲循环与夜间专属
                       renderHighlights(h, data.loopSong, data.nightSong, ctx),
@@ -1926,31 +2535,47 @@ const createReportPage = (ctx) => {
                         // 365天听歌热力图（整行）
                         data.heatmap && data.heatmap.length > 0
                           ? h('div', { class: 'mst-card mst-full' }, [
-                              sectionTitle(Icon, ctx.icons.iconCalendar || ctx.icons.iconClock, '365天听歌足迹热力图'),
-                              h('p', { class: 'mst-card-sub' }, '过去一年每一天的听歌频次（矩阵格子越深听歌越多，悬停查看具体日期与时长）'),
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconCalendar || ctx.icons.iconClock,
+                                '365天听歌足迹热力图',
+                                '全景回溯过去一年每一天的听歌频次与活跃深浅分布',
+                              ),
                               renderHeatmapChart(h, data.heatmap),
                             ])
                           : null,
 
                         // 24小时音乐生物钟（整行）
                         h('div', { class: 'mst-card mst-full' }, [
-                          sectionTitle(Icon, ctx.icons.iconClock, '24小时音乐生物钟'),
-                          h('p', { class: 'mst-card-sub' }, '晨起、工作、黄昏、深夜四大时段听歌作息与活跃峰值画像'),
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconClock,
+                            '24小时音乐生物钟',
+                            '晨起、工作、黄昏、深夜四大时段的听歌节奏与活跃峰值',
+                          ),
                           renderCircadianClock(h, data.hours),
                         ]),
 
                         // 听歌个性成就徽章（整行）
                         h('div', { class: 'mst-card mst-full' }, [
-                          sectionTitle(Icon, ctx.icons.iconStar || ctx.icons.iconTrophy, '听歌画像成就徽章'),
-                          h('p', { class: 'mst-card-sub' }, '深度挖掘你的听歌习惯，自动点亮专属个性勋章'),
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconTrophy || ctx.icons.iconStar,
+                            '听歌画像成就徽章',
+                            '深度挖掘你的音乐习惯与行为数据，自动点亮专属个性勋章',
+                          ),
                           renderBadges(h, data),
                         ]),
 
                         // 趋势（整行）
                         data.trend.length > 0
                           ? h('div', { class: 'mst-card mst-full' }, [
-                              sectionTitle(Icon, ctx.icons.iconClock, '听歌时长趋势'),
-                              h('p', { class: 'mst-card-sub' }, isMonthly ? '按月聚合实听时长' : '按天聚合实听时长'),
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconPulse || ctx.icons.iconClock,
+                                '听歌时长趋势',
+                                isMonthly ? '按月份聚合统计实听时长' : '按日期聚合统计实听时长',
+                              ),
                               h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
                             ])
                           : null,
@@ -1958,49 +2583,56 @@ const createReportPage = (ctx) => {
                         // Top 歌手
                         data.topArtists.length > 0
                           ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(Icon, ctx.icons.iconTrophy, 'Top 歌手'),
-                              h('p', { class: 'mst-card-sub' }, '按累计实听时长降序'),
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconUsers || ctx.icons.iconTrophy,
+                                'Top 歌手排行',
+                                '按区间内累计有效实听时长降序',
+                              ),
                               renderArtistBars(h, data.topArtists),
                             ])
                           : null,
 
                         // Top 歌曲（支持 Tab 切换：Top 播放 / 耐听榜 / 常切榜）
                         h('div', { class: 'mst-card' }, [
-                          sectionTitle(Icon, ctx.icons.iconMusic, '歌曲榜单与完播分析'),
-                          h('div', { class: 'mst-tabs' }, [
-                            h(
-                              'button',
-                              {
-                                class: ['mst-tab-btn', songTab.value === 'top' ? 'active' : ''],
-                                onClick: () => { songTab.value = 'top'; },
-                              },
-                              `Top 播放 (${data.topSongs.length})`,
-                            ),
-                            h(
-                              'button',
-                              {
-                                class: ['mst-tab-btn', songTab.value === 'completed' ? 'active' : ''],
-                                onClick: () => { songTab.value = 'completed'; },
-                              },
-                              `最耐听 (${(data.completedSongs || []).length})`,
-                            ),
-                            h(
-                              'button',
-                              {
-                                class: ['mst-tab-btn', songTab.value === 'skipped' ? 'active' : ''],
-                                onClick: () => { songTab.value = 'skipped'; },
-                              },
-                              `最常切歌 (${(data.skippedSongs || []).length})`,
-                            ),
-                          ]),
-                          h(
-                            'p',
-                            { class: 'mst-card-sub' },
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconMusic,
+                            '歌曲榜单与完播分析',
                             songTab.value === 'top'
                               ? '按播放次数降序（点击单曲可直接播放）'
                               : songTab.value === 'completed'
                               ? '最常听完的单曲榜（完播率 85% 以上）'
                               : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
+                            h('div', { class: 'mst-segmented', style: 'padding: 2px;' }, [
+                              h(
+                                'button',
+                                {
+                                  class: ['mst-seg-btn', songTab.value === 'top' ? 'active' : ''],
+                                  style: 'padding: 3px 9px; font-size: 11px;',
+                                  onClick: () => { songTab.value = 'top'; },
+                                },
+                                `Top 播放 (${data.topSongs.length})`,
+                              ),
+                              h(
+                                'button',
+                                {
+                                  class: ['mst-seg-btn', songTab.value === 'completed' ? 'active' : ''],
+                                  style: 'padding: 3px 9px; font-size: 11px;',
+                                  onClick: () => { songTab.value = 'completed'; },
+                                },
+                                `最耐听 (${(data.completedSongs || []).length})`,
+                              ),
+                              h(
+                                'button',
+                                {
+                                  class: ['mst-seg-btn', songTab.value === 'skipped' ? 'active' : ''],
+                                  style: 'padding: 3px 9px; font-size: 11px;',
+                                  onClick: () => { songTab.value = 'skipped'; },
+                                },
+                                `常切 (${(data.skippedSongs || []).length})`,
+                              ),
+                            ]),
                           ),
                           renderSongList(
                             h,
@@ -2015,16 +2647,24 @@ const createReportPage = (ctx) => {
 
                         // 时段分布
                         h('div', { class: 'mst-card' }, [
-                          sectionTitle(Icon, ctx.icons.iconClock, '每日时段分布'),
-                          h('p', { class: 'mst-card-sub' }, '按播放次数统计（0–23 点）'),
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconClock,
+                            '每日 24 时段分布',
+                            '按 0–23 点各时段历史播放次数统计分布',
+                          ),
                           h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
                         ]),
 
                         // 音源占比与音质画像
                         sourceItems.total > 0
                           ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(Icon, ctx.icons.iconCloud, '音源与音质画像'),
-                              h('p', { class: 'mst-card-sub' }, '按音源来源与音频质量分布统计'),
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconCloud || ctx.icons.iconHeadphones,
+                                '音源与音质画像',
+                                '音源来源渠道与解码音质分布',
+                              ),
                               h('div', { class: 'mst-donut-wrap' }, [
                                 renderDonut(h, sourceItems.items, sourceItems.total),
                                 renderSourceLegend(h, sourceItems.items, sourceItems.total),
@@ -2046,10 +2686,22 @@ const createReportPage = (ctx) => {
 
 // ---- 报告页子渲染 ----
 
-const kpiCard = (h, label, value) =>
+const kpiCard = (h, label, value, icon, sub, pct, isSkip) =>
   h('div', { class: 'mst-kpi' }, [
-    h('div', { class: 'mst-kpi-value' }, value),
-    h('div', { class: 'mst-kpi-label' }, label),
+    h('div', { class: 'mst-kpi-top' }, [
+      h('span', { class: 'mst-kpi-label' }, label),
+      icon ? h('span', { class: 'mst-kpi-icon' }, icon) : null,
+    ]),
+    h('div', { class: 'mst-kpi-value', title: String(value) }, value),
+    pct !== undefined
+      ? h('div', { class: 'mst-kpi-meter' }, [
+          h('div', {
+            class: ['mst-kpi-meter-fill', isSkip ? 'is-skip' : ''],
+            style: { width: `${Math.min(100, Math.max(0, pct))}%` },
+          }),
+        ])
+      : null,
+    sub ? h('div', { class: 'mst-kpi-sub' }, sub) : null,
   ]);
 
 const annualItem = (h, label, value) =>
@@ -2088,9 +2740,11 @@ const renderSourceLegend = (h, items, total) =>
 const renderArtistBars = (h, rows) => {
   const maxMs = Math.max(1, ...rows.map((r) => Number(r.ms) || 0));
   return h('div', { class: 'mst-bars' }, [
-    ...rows.map((r) => {
+    ...rows.map((r, i) => {
       const ms = Number(r.ms) || 0;
+      const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
       return h('div', { class: 'mst-bar-row', key: String(r.artist) }, [
+        h('span', { class: ['mst-bar-rank', rankCls] }, String(i + 1)),
         h('span', { class: 'mst-bar-name', title: String(r.artist) }, String(r.artist)),
         h('div', { class: 'mst-bar-track' }, [
           h('div', { class: 'mst-bar-fill', style: { width: `${Math.max(2, (ms / maxMs) * 100)}%` } }),
@@ -2103,30 +2757,46 @@ const renderArtistBars = (h, rows) => {
 
 const renderSongList = (h, rows, ctx) =>
   h('div', { class: 'mst-songs' }, [
-    ...rows.map((r, i) =>
-      h(
+    ...rows.map((r, i) => {
+      const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
+      let metaText = `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`;
+      if (r.completion_rate !== undefined) {
+        metaText = `${Number(r.completed_count) || 0} 次完播 (${r.completion_rate}%) · ${formatMsShort(Number(r.ms) || 0)}`;
+      } else if (r.skip_rate !== undefined) {
+        metaText = `${Number(r.skipped_count) || 0} 次跳过 (${r.skip_rate}%) · ${Number(r.plays) || 0} 次尝试`;
+      }
+
+      return h(
         'div',
         {
           class: 'mst-song-row',
-          key: `${String(r.title)}-${String(r.artist)}`,
+          key: `${String(r.title)}-${String(r.artist)}-${i}`,
           style: { cursor: r.track_id ? 'pointer' : 'default' },
           title: r.track_id ? '点击播放此歌曲' : String(r.title),
           onClick: () => {
-            if (r.track_id && ctx?.player?.playTrack) {
-              void ctx.player.playTrack(r.track_id);
+            if (r.track_id) {
+              if (ctx?.player?.playTrack) void ctx.player.playTrack(r.track_id);
+              else if (ctx?.player?.play) void ctx.player.play(r.track_id);
             }
           },
         },
         [
-          h('span', { class: 'mst-song-rank' }, String(i + 1)),
+          h('span', { class: ['mst-song-rank', rankCls] }, String(i + 1)),
           h('div', { class: 'mst-song-main' }, [
             h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
             h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
           ]),
-          h('span', { class: 'mst-song-meta' }, `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`),
+          h('span', { class: 'mst-song-meta' }, metaText),
+          r.track_id
+            ? h(
+                'div',
+                { class: 'mst-song-play-icon', title: '试听' },
+                [h('span', { style: 'font-size: 11px; margin-left: 2px;' }, '▶')],
+              )
+            : null,
         ],
-      ),
-    ),
+      );
+    }),
   ]);
 
 // ---- 设置面板 ----
