@@ -46,6 +46,20 @@ const MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS idx_plays_day ON plays(day);`,
     ],
   },
+  {
+    version: 2,
+    sql: [
+      `ALTER TABLE plays ADD COLUMN completed INTEGER NOT NULL DEFAULT 0;`,
+      `ALTER TABLE plays ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;`,
+    ],
+  },
+  {
+    version: 3,
+    sql: [
+      `ALTER TABLE plays ADD COLUMN quality TEXT NOT NULL DEFAULT '';`,
+      `ALTER TABLE plays ADD COLUMN effect TEXT NOT NULL DEFAULT '';`,
+    ],
+  },
 ];
 
 // 时间范围（默认「本月」）
@@ -55,12 +69,19 @@ const RANGE_OPTIONS = [
   { key: '30d', label: '近 30 天' },
   { key: 'year', label: '今年' },
   { key: 'all', label: '全部' },
+  { key: 'custom', label: '自定义' },
 ];
 
 // ---- 模块级运行状态 ----
 
 let db = null; // 打开的 sqlite 句柄（open 失败时保持 null，采集/查询降级跳过）
-let settings = { enabled: true, minListenSeconds: DEFAULT_MIN_SECONDS };
+let settings = {
+  enabled: true,
+  minListenSeconds: DEFAULT_MIN_SECONDS,
+  scrobblerEnabled: false,
+  scrobblerUrl: '',
+  scrobblerToken: '',
+};
 let current = null; // 当前正在监听的曲目 { trackId,title,artist,album,source,duration,startedAt,maxMs }
 let disposeAll = null;
 
@@ -87,7 +108,12 @@ const startOfToday = () => {
   return d.getTime();
 };
 
-const getRangeMs = (key) => {
+const getRangeMs = (key, customStart, customEnd) => {
+  if (key === 'custom') {
+    const s = customStart ? new Date(customStart).getTime() : 0;
+    const e = customEnd ? new Date(customEnd).getTime() + DAY_MS : MAX_SAFE_MS;
+    return { start: Math.max(0, s), end: e };
+  }
   const today = startOfToday();
   if (key === '7d') return { start: today - 6 * DAY_MS, end: today + DAY_MS };
   if (key === '30d') return { start: today - 29 * DAY_MS, end: today + DAY_MS };
@@ -136,8 +162,8 @@ const insertPlay = async (meta) => {
   const day = formatDay(date);
   const res = await db.run(
     `INSERT OR IGNORE INTO plays
-      (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday, completed, skipped, quality, effect)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       meta.trackId,
       meta.title,
@@ -151,34 +177,111 @@ const insertPlay = async (meta) => {
       day.slice(0, 7),
       date.getHours(),
       date.getDay(),
+      meta.completed ?? 0,
+      meta.skipped ?? 0,
+      meta.quality ?? '',
+      meta.effect ?? '',
     ],
   );
   if (!res.ok) console.warn('[music-stats] 写入播放记录失败:', res.error);
 };
 
+// ---- Scrobbler 云端互联（支持 Last.fm / ListenBrainz 等） ----
+
+const triggerScrobble = async (ctx, rec) => {
+  if (!settings.scrobblerEnabled || !settings.scrobblerUrl) return;
+  try {
+    const payload = {
+      track: rec.title,
+      artist: rec.artist,
+      album: rec.album,
+      duration: rec.duration,
+      timestamp: Math.floor(rec.startedAt / 1000),
+      service: 'EchoMusic',
+    };
+    if (ctx && ctx.net && typeof ctx.net.request === 'function') {
+      await ctx.net.request({
+        url: settings.scrobblerUrl,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(settings.scrobblerToken ? { Authorization: `Bearer ${settings.scrobblerToken}` } : {}),
+        },
+        body: payload,
+      });
+    } else {
+      await fetch(settings.scrobblerUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(settings.scrobblerToken ? { Authorization: `Bearer ${settings.scrobblerToken}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+    }
+  } catch (err) {
+    console.warn('[music-stats] Scrobble 提交失败:', err);
+  }
+};
+
 // ---- 采集引擎 ----
 
-// 结算上一首：满足阈值且启用才落库；否则丢弃
-const settleCurrent = async () => {
+// 结算上一首：满足阈值且启用才落库；自动标记完播与跳过
+const settleCurrent = async (ctx) => {
   if (!current) return;
   const rec = current;
   current = null;
-  if (settings.enabled && rec.maxMs >= settings.minListenSeconds * 1000) {
+  if (!settings.enabled) return;
+  const durationMs = (rec.duration || 0) * 1000;
+  const playedMs = rec.maxMs || 0;
+  // 完播判定：播放时长达到 85% 以上（或对无时长音频播放超 2 分钟）
+  const completed = (durationMs > 0 && playedMs >= durationMs * 0.85) || (durationMs === 0 && playedMs >= 120000) ? 1 : 0;
+  // 切歌判定：播放少于 15 秒提前切歌
+  const skipped = playedMs < 15000 ? 1 : 0;
+
+  if (playedMs >= settings.minListenSeconds * 1000 || completed) {
     try {
-      await insertPlay({ ...rec, playedMs: rec.maxMs });
+      await insertPlay({ ...rec, playedMs, completed, skipped });
+      if (completed === 1 && ctx) {
+        void triggerScrobble(ctx, { ...rec, playedMs });
+      }
     } catch (error) {
       console.warn('[music-stats] 结算播放记录异常:', error);
     }
   }
 };
 
-const onTrackChange = (track) => {
+const onTrackChange = (track, ctx) => {
   const meta = songToMeta(track);
   const trackId = meta ? meta.trackId : null;
   // 同一首歌的深层字段变化（封面/音频地址解析）会触发 deep watch，用 id 去抖
   if (current && current.trackId === trackId) return;
-  void settleCurrent();
-  current = meta && settings.enabled ? { ...meta, startedAt: Date.now(), maxMs: 0 } : null;
+  void settleCurrent(ctx);
+
+  let quality = '';
+  let effect = '';
+  try {
+    quality = String(
+      track?.quality ||
+      track?.level ||
+      ctx?.player?.audioQuality?.value?.resolved ||
+      ctx?.stores?.player?.currentResolvedAudioQuality ||
+      '',
+    );
+    effect = String(
+      ctx?.player?.audioEffect?.value?.resolved ||
+      ctx?.stores?.player?.currentResolvedAudioEffect ||
+      '',
+    );
+  } catch {}
+
+  current = meta && settings.enabled ? {
+    ...meta,
+    quality,
+    effect,
+    startedAt: Date.now(),
+    maxMs: 0,
+  } : null;
 };
 
 const onTimeUpdate = (payload) => {
@@ -194,16 +297,54 @@ const onTimeUpdate = (payload) => {
 
 const QUERY_KPI = `SELECT COUNT(*) AS n, COALESCE(SUM(played_ms), 0) AS ms,
   COUNT(DISTINCT title || '|' || artist) AS songs,
-  COUNT(DISTINCT artist) AS artists
+  COUNT(DISTINCT artist) AS artists,
+  COALESCE(SUM(completed), 0) AS completed_count,
+  COALESCE(SUM(skipped), 0) AS skipped_count
   FROM plays WHERE started_at >= ? AND started_at < ?`;
 
 const QUERY_TOP_ARTISTS = `SELECT artist, COUNT(*) AS plays, SUM(played_ms) AS ms
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY artist ORDER BY ms DESC LIMIT 10`;
 
-const QUERY_TOP_SONGS = `SELECT title, artist, COUNT(*) AS plays, SUM(played_ms) AS ms
+const QUERY_TOP_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays, SUM(played_ms) AS ms,
+  COALESCE(SUM(completed), 0) AS completed_count
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY title, artist ORDER BY plays DESC LIMIT 20`;
+
+const QUERY_COMPLETED_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays,
+  SUM(completed) AS completed_count,
+  ROUND(CAST(SUM(completed) AS FLOAT) / COUNT(*) * 100, 1) AS completion_rate
+  FROM plays WHERE started_at >= ? AND started_at < ?
+  GROUP BY title, artist HAVING completed_count > 0
+  ORDER BY completed_count DESC, plays DESC LIMIT 15`;
+
+const QUERY_SKIPPED_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays,
+  SUM(skipped) AS skipped_count,
+  ROUND(CAST(SUM(skipped) AS FLOAT) / COUNT(*) * 100, 1) AS skip_rate
+  FROM plays WHERE started_at >= ? AND started_at < ?
+  GROUP BY title, artist HAVING skipped_count > 0
+  ORDER BY skipped_count DESC, plays DESC LIMIT 15`;
+
+const QUERY_LOOP_SONG = `SELECT title, artist, day, COUNT(*) AS daily_plays
+  FROM plays WHERE started_at >= ? AND started_at < ?
+  GROUP BY title, artist, day HAVING daily_plays >= 2
+  ORDER BY daily_plays DESC LIMIT 1`;
+
+const QUERY_NIGHT_SONG = `SELECT title, artist, COUNT(*) AS night_plays
+  FROM plays WHERE hour >= 0 AND hour < 6 AND started_at >= ? AND started_at < ?
+  GROUP BY title, artist ORDER BY night_plays DESC LIMIT 1`;
+
+const QUERY_QUALITIES = `SELECT quality, COUNT(*) AS plays, SUM(played_ms) AS ms
+  FROM plays WHERE started_at >= ? AND started_at < ? AND quality != ''
+  GROUP BY quality ORDER BY plays DESC`;
+
+const QUERY_EFFECTS = `SELECT effect, COUNT(*) AS plays, SUM(played_ms) AS ms
+  FROM plays WHERE started_at >= ? AND started_at < ? AND effect != '' AND effect != 'none'
+  GROUP BY effect ORDER BY plays DESC`;
+
+const QUERY_HEATMAP = `SELECT day, COUNT(*) AS plays, SUM(played_ms) AS ms
+  FROM plays WHERE started_at >= ? AND started_at < ?
+  GROUP BY day ORDER BY day ASC`;
 
 const QUERY_TREND_DAY = `SELECT day AS bucket, SUM(played_ms) AS ms, COUNT(*) AS plays
   FROM plays WHERE started_at >= ? AND started_at < ?
@@ -233,15 +374,51 @@ const runQuery = async (dbHandle, sql, params) => {
 const queryReport = async (dbHandle, range, granularity) => {
   const params = [range.start, range.end];
   const trendSql = granularity === 'month' ? QUERY_TREND_MONTH : QUERY_TREND_DAY;
-  const [kpiRows, topArtists, topSongs, trend, hours, sources] = await Promise.all([
+  const heatmapStart = Date.now() - 365 * DAY_MS;
+  const [
+    kpiRows,
+    topArtists,
+    topSongs,
+    trend,
+    hours,
+    sources,
+    completedSongs,
+    skippedSongs,
+    loopSongRows,
+    nightSongRows,
+    qualities,
+    effects,
+    heatmap,
+  ] = await Promise.all([
     runQuery(dbHandle, QUERY_KPI, params),
     runQuery(dbHandle, QUERY_TOP_ARTISTS, params),
     runQuery(dbHandle, QUERY_TOP_SONGS, params),
     runQuery(dbHandle, trendSql, params),
     runQuery(dbHandle, QUERY_HOURS, params),
     runQuery(dbHandle, QUERY_SOURCES, params),
+    runQuery(dbHandle, QUERY_COMPLETED_SONGS, params),
+    runQuery(dbHandle, QUERY_SKIPPED_SONGS, params),
+    runQuery(dbHandle, QUERY_LOOP_SONG, params),
+    runQuery(dbHandle, QUERY_NIGHT_SONG, params),
+    runQuery(dbHandle, QUERY_QUALITIES, params),
+    runQuery(dbHandle, QUERY_EFFECTS, params),
+    runQuery(dbHandle, QUERY_HEATMAP, [heatmapStart, Date.now() + DAY_MS]),
   ]);
-  return { kpi: kpiRows[0] || null, topArtists, topSongs, trend, hours, sources };
+  return {
+    kpi: kpiRows[0] || null,
+    topArtists,
+    topSongs,
+    trend,
+    hours,
+    sources,
+    completedSongs,
+    skippedSongs,
+    loopSong: loopSongRows[0] || null,
+    nightSong: nightSongRows[0] || null,
+    qualities,
+    effects,
+    heatmap,
+  };
 };
 
 // ---- 数据备份（导出 / 导入） ----
@@ -774,11 +951,244 @@ const CSS = `
   padding: 14px 16px;
 }
 
+/* 365天热力图 */
+.mst-heatmap-wrap {
+  overflow-x: auto;
+  padding: 8px 0;
+}
+.mst-heatmap-wrap svg {
+  display: block;
+  min-width: 760px;
+}
+.mst-heatmap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+}
+.mst-heatmap-legend-box {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+/* 24小时音乐生物钟 */
+.mst-circadian-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+.mst-circadian-card {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.mst-circadian-card.mst-peak {
+  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)));
+}
+.mst-circadian-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mst-circadian-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-main, #f8fafc);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mst-circadian-peak-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--color-primary, #31cfa1);
+  color: #000;
+}
+.mst-circadian-time {
+  font-size: 11px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+}
+.mst-circadian-percent {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--color-text-main, #f8fafc);
+}
+.mst-circadian-bar-bg {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.15);
+  overflow: hidden;
+}
+.mst-circadian-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-primary, #31cfa1);
+  transition: width 0.3s ease;
+}
+
+/* 听歌个性成就徽章 */
+.mst-badges-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 10px;
+}
+.mst-badge-card {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.2s;
+}
+.mst-badge-card.unlocked {
+  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 6%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05)));
+}
+.mst-badge-card.locked {
+  opacity: 0.55;
+  filter: grayscale(0.6);
+}
+.mst-badge-icon {
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.1));
+}
+.mst-badge-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.mst-badge-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-main, #f8fafc);
+}
+.mst-badge-desc {
+  font-size: 11px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+}
+.mst-badge-status {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-primary, #31cfa1);
+}
+
+/* 单曲神曲高亮卡片 */
+.mst-highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.mst-highlight-card {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.07));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mst-highlight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mst-highlight-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-primary, #31cfa1);
+}
+.mst-highlight-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--color-text-main, #f8fafc);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mst-highlight-sub {
+  font-size: 12px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+}
+
+/* Tab 切换按钮 */
+.mst-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.mst-tab-btn {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mst-tab-btn.active {
+  background: var(--color-primary, #31cfa1);
+  color: #000;
+  border-color: var(--color-primary, #31cfa1);
+}
+
+/* 自定义日期筛选 */
+.mst-custom-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mst-date-input {
+  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
+  color: var(--color-text-main, #f8fafc);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
 @media (max-width: 640px) {
   .mst-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .mst-annual-grid {
+    grid-template-columns: 1fr;
+  }
+  .mst-circadian-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .mst-badges-grid {
+    grid-template-columns: 1fr;
+  }
+  .mst-highlight-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -926,6 +1336,393 @@ const renderDonut = (h, segments, total) => {
   ]);
 };
 
+// 365天听歌热力图（GitHub 矩阵风，52列 x 7行）
+const renderHeatmapChart = (h, rows) => {
+  const byDay = new Map(rows.map((r) => [String(r.day), { plays: Number(r.plays) || 0, ms: Number(r.ms) || 0 }]));
+  const today = new Date();
+  const days = [];
+  const start = new Date(today);
+  start.setDate(today.getDate() - 364);
+  const startDayOfWeek = start.getDay();
+  const curr = new Date(start);
+  curr.setDate(curr.getDate() - startDayOfWeek);
+
+  while (curr <= today) {
+    days.push(new Date(curr));
+    curr.setDate(curr.getDate() + 1);
+  }
+
+  const cellSize = 11;
+  const gap = 3;
+  const padL = 36;
+  const padT = 20;
+  const weeks = Math.ceil(days.length / 7);
+  const totalW = padL + weeks * (cellSize + gap) + 10;
+  const totalH = padT + 7 * (cellSize + gap) + 16;
+
+  const rects = [];
+  const monthLabels = [];
+  let lastMonth = -1;
+
+  days.forEach((d, idx) => {
+    const col = Math.floor(idx / 7);
+    const row = idx % 7;
+    const dayStr = formatDay(d);
+    const stat = byDay.get(dayStr) || { plays: 0, ms: 0 };
+    const plays = stat.plays;
+
+    if (row === 0 && d.getMonth() !== lastMonth && col < weeks - 1) {
+      lastMonth = d.getMonth();
+      monthLabels.push(
+        h(
+          'text',
+          {
+            x: padL + col * (cellSize + gap),
+            y: padT - 6,
+            'font-size': 10,
+            style: { fill: chartText },
+          },
+          `${lastMonth + 1}月`,
+        ),
+      );
+    }
+
+    let fillColor = 'rgba(148, 163, 184, 0.08)';
+    if (plays >= 12) fillColor = 'var(--color-primary, #31cfa1)';
+    else if (plays >= 6) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 75%, transparent)';
+    else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent)';
+    else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent)';
+
+    rects.push(
+      h(
+        'rect',
+        {
+          x: padL + col * (cellSize + gap),
+          y: padT + row * (cellSize + gap),
+          width: cellSize,
+          height: cellSize,
+          rx: 2,
+          style: { fill: fillColor, cursor: 'pointer' },
+        },
+        [
+          h('title', null, `${dayStr}：${plays} 次播放 · ${formatMsShort(stat.ms)}`),
+        ],
+      ),
+    );
+  });
+
+  const weekLabels = [
+    { row: 1, text: '一' },
+    { row: 3, text: '三' },
+    { row: 5, text: '五' },
+  ].map((w) =>
+    h(
+      'text',
+      {
+        x: padL - 8,
+        y: padT + w.row * (cellSize + gap) + 9,
+        'font-size': 9,
+        'text-anchor': 'end',
+        style: { fill: chartText },
+      },
+      w.text,
+    ),
+  );
+
+  return h('div', { class: 'mst-heatmap-wrap' }, [
+    h(
+      'svg',
+      {
+        viewBox: `0 0 ${totalW} ${totalH}`,
+        width: totalW,
+        height: totalH,
+        role: 'img',
+        'aria-label': '365天听歌热力图',
+      },
+      [...monthLabels, ...weekLabels, ...rects],
+    ),
+    h('div', { class: 'mst-heatmap-legend' }, [
+      h('span', null, '少'),
+      h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.08);' }),
+      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent);' }),
+      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent);' }),
+      h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 75%, transparent);' }),
+      h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--color-primary, #31cfa1);' }),
+      h('span', null, '多'),
+    ]),
+  ]);
+};
+
+// 24小时音乐生物钟
+const renderCircadianClock = (h, rows) => {
+  const byHour = new Map(rows.map((r) => [Number(r.hour), Number(r.plays) || 0]));
+  const sumRange = (start, end) => {
+    let s = 0;
+    for (let i = start; i <= end; i++) s += byHour.get(i) || 0;
+    return s;
+  };
+
+  const morning = sumRange(6, 10);
+  const work = sumRange(11, 17);
+  const dusk = sumRange(18, 21);
+  const night = sumRange(22, 23) + sumRange(0, 5);
+  const total = Math.max(1, morning + work + dusk + night);
+
+  const periods = [
+    { id: 'morning', name: '清晨启程', time: '06:00 - 11:00', icon: '🌅', plays: morning },
+    { id: 'work', name: '专注工作', time: '11:00 - 18:00', icon: '💼', plays: work },
+    { id: 'dusk', name: '暮光晚霞', time: '18:00 - 22:00', icon: '🌆', plays: dusk },
+    { id: 'night', name: '深夜漫游', time: '22:00 - 06:00', icon: '🌌', plays: night },
+  ];
+
+  const maxPlays = Math.max(1, ...periods.map((p) => p.plays));
+
+  return h('div', { class: 'mst-circadian-grid' }, [
+    ...periods.map((p) => {
+      const pct = Math.round((p.plays / total) * 100);
+      const isPeak = p.plays === maxPlays && p.plays > 0;
+      return h(
+        'div',
+        { class: ['mst-circadian-card', isPeak ? 'mst-peak' : ''] },
+        [
+          h('div', { class: 'mst-circadian-head' }, [
+            h('span', { class: 'mst-circadian-name' }, [
+              h('span', null, p.icon),
+              h('span', null, p.name),
+            ]),
+            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '峰值') : null,
+          ]),
+          h('div', { class: 'mst-circadian-time' }, p.time),
+          h('div', { class: 'mst-circadian-percent' }, `${pct}%`),
+          h('div', { class: 'mst-circadian-bar-bg' }, [
+            h('div', { class: 'mst-circadian-bar-fill', style: { width: `${pct}%` } }),
+          ]),
+          h('div', { class: 'mst-card-sub', style: 'margin: 0;' }, `${p.plays} 次播放`),
+        ],
+      );
+    }),
+  ]);
+};
+
+// 听歌画像个性成就徽章
+const renderBadges = (h, data) => {
+  const totalPlays = Number(data?.kpi?.n || 0);
+  const totalMs = Number(data?.kpi?.ms || 0);
+  const artistsCount = Number(data?.kpi?.artists || 0);
+  const hours = data?.hours || [];
+  const loopSong = data?.loopSong;
+  const qualities = data?.qualities || [];
+
+  let nightPlays = 0;
+  hours.forEach((r) => {
+    const hr = Number(r.hour);
+    if (hr >= 0 && hr < 6) nightPlays += Number(r.plays || 0);
+  });
+  const nightRate = totalPlays > 0 ? nightPlays / totalPlays : 0;
+
+  let hiresPlays = 0;
+  qualities.forEach((q) => {
+    const name = String(q.quality || '').toLowerCase();
+    if (name.includes('flac') || name.includes('hires') || name.includes('sq') || name.includes('atmos')) {
+      hiresPlays += Number(q.plays || 0);
+    }
+  });
+  const hiresRate = totalPlays > 0 ? hiresPlays / totalPlays : 0;
+
+  const sumH = (s, e) => {
+    let cnt = 0;
+    for (let i = s; i <= e; i++) {
+      const row = hours.find((h) => Number(h.hour) === i);
+      if (row) cnt += Number(row.plays || 0);
+    }
+    return cnt;
+  };
+  const mPlays = sumH(6, 10);
+  const wPlays = sumH(11, 17);
+  const dPlays = sumH(18, 21);
+  const nPlays = sumH(22, 23) + sumH(0, 5);
+  const allSeason =
+    totalPlays >= 15 &&
+    mPlays / totalPlays >= 0.05 &&
+    wPlays / totalPlays >= 0.05 &&
+    dPlays / totalPlays >= 0.05 &&
+    nPlays / totalPlays >= 0.05;
+
+  const badges = [
+    {
+      id: 'night',
+      icon: '🌙',
+      title: '深夜哲学家',
+      desc: '凌晨 0-6 点听歌占比 > 20%',
+      unlocked: nightRate >= 0.2 && nightPlays >= 5,
+    },
+    {
+      id: 'lossless',
+      icon: '🎧',
+      title: '无损发烧友',
+      desc: 'SQ / Hi-Res / 杜比全景声占比 > 40%',
+      unlocked: hiresRate >= 0.4 && hiresPlays >= 5,
+    },
+    {
+      id: 'loop',
+      icon: '🔁',
+      title: '专一单曲狂人',
+      desc: '单曲单日循环播放 >= 5 次',
+      unlocked: Boolean(loopSong && Number(loopSong.daily_plays) >= 5),
+    },
+    {
+      id: 'diverse',
+      icon: '🌍',
+      title: '百家争鸣',
+      desc: '收听去重歌手 >= 20 位',
+      unlocked: artistsCount >= 20,
+    },
+    {
+      id: 'marathon',
+      icon: '🏃',
+      title: '音乐马拉松',
+      desc: '累计实听时长 >= 30 小时',
+      unlocked: totalMs >= 30 * 3600 * 1000,
+    },
+    {
+      id: 'all_day',
+      icon: '🕊️',
+      title: '全天候候鸟',
+      desc: '晨、昼、暮、夜皆有音乐相伴',
+      unlocked: allSeason,
+    },
+  ];
+
+  return h('div', { class: 'mst-badges-grid' }, [
+    ...badges.map((b) =>
+      h('div', { class: ['mst-badge-card', b.unlocked ? 'unlocked' : 'locked'], key: b.id }, [
+        h('div', { class: 'mst-badge-icon' }, b.icon),
+        h('div', { class: 'mst-badge-info' }, [
+          h('div', { class: 'mst-badge-title' }, b.title),
+          h('div', { class: 'mst-badge-desc' }, b.desc),
+          h(
+            'div',
+            { class: 'mst-badge-status' },
+            b.unlocked ? '已达成 ✦' : '未达成 🔒',
+          ),
+        ]),
+      ]),
+    ),
+  ]);
+};
+
+// 神曲循环狂热与深夜专属
+const renderHighlights = (h, loopSong, nightSong, ctx) => {
+  if (!loopSong && !nightSong) return null;
+  return h('div', { class: 'mst-highlight-grid' }, [
+    loopSong
+      ? h('div', { class: 'mst-highlight-card' }, [
+          h('div', { class: 'mst-highlight-head' }, [
+            h('span', { class: 'mst-highlight-tag' }, '🔥 单日单曲循环神曲'),
+            h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, loopSong.day),
+          ]),
+          h(
+            'div',
+            {
+              class: 'mst-highlight-title',
+              style: 'cursor: pointer;',
+              title: '点击播放',
+              onClick: () => {
+                if (ctx?.player?.play && loopSong.track_id) void ctx.player.play(loopSong.track_id);
+              },
+            },
+            String(loopSong.title),
+          ),
+          h(
+            'div',
+            { class: 'mst-highlight-sub' },
+            `${loopSong.artist} · 单日循环 ${loopSong.daily_plays} 次`,
+          ),
+        ])
+      : null,
+    nightSong
+      ? h('div', { class: 'mst-highlight-card' }, [
+          h('div', { class: 'mst-highlight-head' }, [
+            h('span', { class: 'mst-highlight-tag' }, '🌌 深夜灵魂单曲 (00:00-06:00)'),
+          ]),
+          h(
+            'div',
+            {
+              class: 'mst-highlight-title',
+              style: 'cursor: pointer;',
+              title: '点击播放',
+              onClick: () => {
+                if (ctx?.player?.play && nightSong.track_id) void ctx.player.play(nightSong.track_id);
+              },
+            },
+            String(nightSong.title),
+          ),
+          h(
+            'div',
+            { class: 'mst-highlight-sub' },
+            `${nightSong.artist} · 深夜播放 ${nightSong.night_plays} 次`,
+          ),
+        ])
+      : null,
+  ]);
+};
+
+// 音质与音效画像
+const renderQualityAndEffects = (h, qualities, effects) => {
+  const totalQ = qualities.reduce((acc, it) => acc + Number(it.plays || 0), 0);
+  const totalE = effects.reduce((acc, it) => acc + Number(it.plays || 0), 0);
+  const qualityMap = {
+    '128k': '标准 (128k)',
+    '320k': '高质量 (320k)',
+    flac: '无损 SQ (FLAC)',
+    hires: 'Hi-Res 高解析',
+    viper_atmos: '杜比全景声',
+  };
+  const effectMap = {
+    vinyl: '黑胶唱机',
+    pure_vocal: '纯净人声',
+    surround: '全景环绕',
+    bass: '超重低音',
+  };
+
+  return h('div', { class: 'mst-bars' }, [
+    qualities.length > 0
+      ? [
+          h('div', { class: 'mst-card-title', style: 'font-size: 13px;' }, '音质分布'),
+          ...qualities.slice(0, 4).map((q) => {
+            const plays = Number(q.plays || 0);
+            const pct = totalQ > 0 ? Math.round((plays / totalQ) * 100) : 0;
+            const label = qualityMap[q.quality] || q.quality;
+            return h('div', { class: 'mst-bar-row', key: q.quality }, [
+              h('span', { class: 'mst-bar-name', title: label }, label),
+              h('div', { class: 'mst-bar-track' }, [
+                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%` } }),
+              ]),
+              h('span', { class: 'mst-bar-val' }, `${pct}% (${plays}次)`),
+            ]);
+          }),
+        ]
+      : null,
+    effects.length > 0
+      ? [
+          h('div', { class: 'mst-card-title', style: 'font-size: 13px; margin-top: 14px;' }, '音效搭配偏好'),
+          ...effects.slice(0, 4).map((e) => {
+            const plays = Number(e.plays || 0);
+            const pct = totalE > 0 ? Math.round((plays / totalE) * 100) : 0;
+            const label = effectMap[e.effect] || e.effect;
+            return h('div', { class: 'mst-bar-row', key: e.effect }, [
+              h('span', { class: 'mst-bar-name', title: label }, label),
+              h('div', { class: 'mst-bar-track' }, [
+                h('div', { class: 'mst-bar-fill', style: { width: `${pct}%`, background: '#818cf8' } }),
+              ]),
+              h('span', { class: 'mst-bar-val' }, `${pct}% (${plays}次)`),
+            ]);
+          }),
+        ]
+      : null,
+  ]);
+};
+
 // ---- 报告页 ----
 
 const createReportPage = (ctx) => {
@@ -945,6 +1742,9 @@ const createReportPage = (ctx) => {
       const Icon = resolveComponent('Icon');
 
       const range = ref('month');
+      const songTab = ref('top');
+      const customStart = ref('');
+      const customEnd = ref('');
       const loading = ref(false);
       const error = ref('');
       const report = ref(null); // { kpi, topArtists, topSongs, trend, hours, sources }
@@ -957,7 +1757,11 @@ const createReportPage = (ctx) => {
         loading.value = true;
         error.value = '';
         try {
-          report.value = await queryReport(db, getRangeMs(range.value), trendGranularity(range.value));
+          report.value = await queryReport(
+            db,
+            getRangeMs(range.value, customStart.value, customEnd.value),
+            trendGranularity(range.value),
+          );
         } catch (err) {
           console.warn('[music-stats] 查询报告失败:', err);
           error.value = '读取统计失败，请稍后重试';
@@ -1034,6 +1838,34 @@ const createReportPage = (ctx) => {
               ),
             ]),
 
+            range.value === 'custom'
+              ? h('div', { class: 'mst-custom-range' }, [
+                  h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, '起止日期：'),
+                  h('input', {
+                    type: 'date',
+                    class: 'mst-date-input',
+                    value: customStart.value,
+                    onChange: (e) => {
+                      customStart.value = e.target.value;
+                    },
+                  }),
+                  h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, '至'),
+                  h('input', {
+                    type: 'date',
+                    class: 'mst-date-input',
+                    value: customEnd.value,
+                    onChange: (e) => {
+                      customEnd.value = e.target.value;
+                    },
+                  }),
+                  h(
+                    'button',
+                    { class: 'mst-tab-btn active', onClick: load },
+                    '查询',
+                  ),
+                ])
+              : null,
+
             loading.value && !data
               ? h('div', { class: 'mst-card' }, [h('div', { class: 'mst-state' }, [h('p', null, '加载中…')])])
               : error.value && !data
@@ -1068,12 +1900,52 @@ const createReportPage = (ctx) => {
                       h('div', { class: 'mst-kpis' }, [
                         kpiCard(h, '总听歌时长', formatMsShort(Number(data.kpi.ms) || 0)),
                         kpiCard(h, '总播放次数', `${Number(data.kpi.n) || 0} 次`),
+                        kpiCard(
+                          h,
+                          '完播率',
+                          Number(data.kpi.n) > 0
+                            ? `${Math.round(((Number(data.kpi.completed_count) || 0) / Number(data.kpi.n)) * 100)}%`
+                            : '0%',
+                        ),
+                        kpiCard(
+                          h,
+                          '切歌跳过率',
+                          Number(data.kpi.n) > 0
+                            ? `${Math.round(((Number(data.kpi.skipped_count) || 0) / Number(data.kpi.n)) * 100)}%`
+                            : '0%',
+                        ),
                         kpiCard(h, '去重歌曲', `${Number(data.kpi.songs) || 0} 首`),
                         kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`),
                       ]),
 
+                      // 神曲循环与夜间专属
+                      renderHighlights(h, data.loopSong, data.nightSong, ctx),
+
                       // 卡片区：趋势整行，其余两两并排
                       h('div', { class: 'mst-grid' }, [
+                        // 365天听歌热力图（整行）
+                        data.heatmap && data.heatmap.length > 0
+                          ? h('div', { class: 'mst-card mst-full' }, [
+                              sectionTitle(Icon, ctx.icons.iconCalendar || ctx.icons.iconClock, '365天听歌足迹热力图'),
+                              h('p', { class: 'mst-card-sub' }, '过去一年每一天的听歌频次（矩阵格子越深听歌越多，悬停查看具体日期与时长）'),
+                              renderHeatmapChart(h, data.heatmap),
+                            ])
+                          : null,
+
+                        // 24小时音乐生物钟（整行）
+                        h('div', { class: 'mst-card mst-full' }, [
+                          sectionTitle(Icon, ctx.icons.iconClock, '24小时音乐生物钟'),
+                          h('p', { class: 'mst-card-sub' }, '晨起、工作、黄昏、深夜四大时段听歌作息与活跃峰值画像'),
+                          renderCircadianClock(h, data.hours),
+                        ]),
+
+                        // 听歌个性成就徽章（整行）
+                        h('div', { class: 'mst-card mst-full' }, [
+                          sectionTitle(Icon, ctx.icons.iconStar || ctx.icons.iconTrophy, '听歌画像成就徽章'),
+                          h('p', { class: 'mst-card-sub' }, '深度挖掘你的听歌习惯，自动点亮专属个性勋章'),
+                          renderBadges(h, data),
+                        ]),
+
                         // 趋势（整行）
                         data.trend.length > 0
                           ? h('div', { class: 'mst-card mst-full' }, [
@@ -1092,14 +1964,54 @@ const createReportPage = (ctx) => {
                             ])
                           : null,
 
-                        // Top 歌曲
-                        data.topSongs.length > 0
-                          ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(Icon, ctx.icons.iconMusic, 'Top 歌曲'),
-                              h('p', { class: 'mst-card-sub' }, '按播放次数降序'),
-                              renderSongList(h, data.topSongs),
-                            ])
-                          : null,
+                        // Top 歌曲（支持 Tab 切换：Top 播放 / 耐听榜 / 常切榜）
+                        h('div', { class: 'mst-card' }, [
+                          sectionTitle(Icon, ctx.icons.iconMusic, '歌曲榜单与完播分析'),
+                          h('div', { class: 'mst-tabs' }, [
+                            h(
+                              'button',
+                              {
+                                class: ['mst-tab-btn', songTab.value === 'top' ? 'active' : ''],
+                                onClick: () => { songTab.value = 'top'; },
+                              },
+                              `Top 播放 (${data.topSongs.length})`,
+                            ),
+                            h(
+                              'button',
+                              {
+                                class: ['mst-tab-btn', songTab.value === 'completed' ? 'active' : ''],
+                                onClick: () => { songTab.value = 'completed'; },
+                              },
+                              `最耐听 (${(data.completedSongs || []).length})`,
+                            ),
+                            h(
+                              'button',
+                              {
+                                class: ['mst-tab-btn', songTab.value === 'skipped' ? 'active' : ''],
+                                onClick: () => { songTab.value = 'skipped'; },
+                              },
+                              `最常切歌 (${(data.skippedSongs || []).length})`,
+                            ),
+                          ]),
+                          h(
+                            'p',
+                            { class: 'mst-card-sub' },
+                            songTab.value === 'top'
+                              ? '按播放次数降序（点击单曲可直接播放）'
+                              : songTab.value === 'completed'
+                              ? '最常听完的单曲榜（完播率 85% 以上）'
+                              : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
+                          ),
+                          renderSongList(
+                            h,
+                            songTab.value === 'top'
+                              ? data.topSongs
+                              : songTab.value === 'completed'
+                              ? data.completedSongs || []
+                              : data.skippedSongs || [],
+                            ctx,
+                          ),
+                        ]),
 
                         // 时段分布
                         h('div', { class: 'mst-card' }, [
@@ -1108,15 +2020,18 @@ const createReportPage = (ctx) => {
                           h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
                         ]),
 
-                        // 音源占比
+                        // 音源占比与音质画像
                         sourceItems.total > 0
                           ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(Icon, ctx.icons.iconCloud, '音源占比'),
-                              h('p', { class: 'mst-card-sub' }, '按播放次数统计'),
+                              sectionTitle(Icon, ctx.icons.iconCloud, '音源与音质画像'),
+                              h('p', { class: 'mst-card-sub' }, '按音源来源与音频质量分布统计'),
                               h('div', { class: 'mst-donut-wrap' }, [
                                 renderDonut(h, sourceItems.items, sourceItems.total),
                                 renderSourceLegend(h, sourceItems.items, sourceItems.total),
                               ]),
+                              data.qualities && data.qualities.length > 0
+                                ? renderQualityAndEffects(h, data.qualities, data.effects || [])
+                                : null,
                             ])
                           : null,
                       ]),
@@ -1186,17 +2101,31 @@ const renderArtistBars = (h, rows) => {
   ]);
 };
 
-const renderSongList = (h, rows) =>
+const renderSongList = (h, rows, ctx) =>
   h('div', { class: 'mst-songs' }, [
     ...rows.map((r, i) =>
-      h('div', { class: 'mst-song-row', key: `${String(r.title)}-${String(r.artist)}` }, [
-        h('span', { class: 'mst-song-rank' }, String(i + 1)),
-        h('div', { class: 'mst-song-main' }, [
-          h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
-          h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
-        ]),
-        h('span', { class: 'mst-song-meta' }, `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`),
-      ]),
+      h(
+        'div',
+        {
+          class: 'mst-song-row',
+          key: `${String(r.title)}-${String(r.artist)}`,
+          style: { cursor: r.track_id ? 'pointer' : 'default' },
+          title: r.track_id ? '点击播放此歌曲' : String(r.title),
+          onClick: () => {
+            if (r.track_id && ctx?.player?.playTrack) {
+              void ctx.player.playTrack(r.track_id);
+            }
+          },
+        },
+        [
+          h('span', { class: 'mst-song-rank' }, String(i + 1)),
+          h('div', { class: 'mst-song-main' }, [
+            h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
+            h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
+          ]),
+          h('span', { class: 'mst-song-meta' }, `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`),
+        ],
+      ),
     ),
   ]);
 
@@ -1214,6 +2143,9 @@ const createSettingsPanel = (ctx) => {
       const loaded = ref(false);
       const enabled = ref(true);
       const minSeconds = ref(DEFAULT_MIN_SECONDS);
+      const scrobblerEnabled = ref(false);
+      const scrobblerUrl = ref('');
+      const scrobblerToken = ref('');
       const confirmClear = ref(false);
       const busy = ref(false);
       let clearTimer = null;
@@ -1224,6 +2156,9 @@ const createSettingsPanel = (ctx) => {
           enabled.value = rawEnabled == null ? true : Boolean(rawEnabled);
           const sec = Number(await ctx.storage.get('minListenSeconds'));
           minSeconds.value = Number.isFinite(sec) && sec > 0 ? sec : DEFAULT_MIN_SECONDS;
+          scrobblerEnabled.value = Boolean(await ctx.storage.get('scrobblerEnabled'));
+          scrobblerUrl.value = String((await ctx.storage.get('scrobblerUrl')) || '');
+          scrobblerToken.value = String((await ctx.storage.get('scrobblerToken')) || '');
         } catch (error) {
           console.warn('[music-stats] 读取设置失败:', error);
         }
@@ -1248,6 +2183,24 @@ const createSettingsPanel = (ctx) => {
         minSeconds.value = Number(value) || DEFAULT_MIN_SECONDS;
         settings.minListenSeconds = minSeconds.value;
         void ctx.storage.set('minListenSeconds', settings.minListenSeconds).catch(() => {});
+      };
+
+      const setScrobblerEnabled = (value) => {
+        scrobblerEnabled.value = Boolean(value);
+        settings.scrobblerEnabled = scrobblerEnabled.value;
+        void ctx.storage.set('scrobblerEnabled', scrobblerEnabled.value).catch(() => {});
+      };
+
+      const setScrobblerUrl = (value) => {
+        scrobblerUrl.value = String(value || '').trim();
+        settings.scrobblerUrl = scrobblerUrl.value;
+        void ctx.storage.set('scrobblerUrl', scrobblerUrl.value).catch(() => {});
+      };
+
+      const setScrobblerToken = (value) => {
+        scrobblerToken.value = String(value || '').trim();
+        settings.scrobblerToken = scrobblerToken.value;
+        void ctx.storage.set('scrobblerToken', scrobblerToken.value).catch(() => {});
       };
 
       const handleClear = async () => {
@@ -1310,10 +2263,83 @@ const createSettingsPanel = (ctx) => {
           a.click();
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(url), 1000);
-          ctx.toast.success(`已导出 ${rows.length} 条记录（保存到下载文件夹）`);
+          ctx.toast.success(`已导出 ${rows.length} 条 JSON 记录（保存到下载文件夹）`);
         } catch (error) {
           console.warn('[music-stats] 导出数据失败:', error);
           ctx.toast.danger('导出失败，请重试');
+        } finally {
+          busy.value = false;
+        }
+      };
+
+      const exportCsv = async () => {
+        if (!db) {
+          ctx.toast.danger('本地数据库未就绪');
+          return;
+        }
+        busy.value = true;
+        try {
+          const res = await db.all('SELECT * FROM plays ORDER BY started_at ASC');
+          const rows = res.rows || [];
+          if (rows.length === 0) {
+            ctx.toast.danger('暂无数据可导出');
+            return;
+          }
+          const headers = [
+            'track_id',
+            'title',
+            'artist',
+            'album',
+            'source',
+            'duration',
+            'played_ms',
+            'started_at',
+            'day',
+            'month',
+            'hour',
+            'weekday',
+            'completed',
+            'skipped',
+            'quality',
+            'effect',
+          ];
+          const escapeCsv = (str) => `"${String(str ?? '').replace(/"/g, '""')}"`;
+          const lines = [headers.join(',')];
+          for (const r of rows) {
+            lines.push(headers.map((h) => escapeCsv(r[h])).join(','));
+          }
+          const blob = new Blob(['\ufeff' + lines.join('\r\n')], {
+            type: 'text/csv;charset=utf-8;',
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `music-stats-${formatDay()}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          ctx.toast.success(`已导出 ${rows.length} 条记录为 CSV 表格`);
+        } catch (error) {
+          console.warn('[music-stats] 导出 CSV 失败:', error);
+          ctx.toast.danger('导出 CSV 失败');
+        } finally {
+          busy.value = false;
+        }
+      };
+
+      const createSystemBackup = async () => {
+        if (!ctx.backups || typeof ctx.backups.create !== 'function') {
+          ctx.toast.info('当前宿主环境未提供系统级备份 API');
+          return;
+        }
+        busy.value = true;
+        try {
+          const res = await ctx.backups.create();
+          if (res.ok) ctx.toast.success('已成功创建系统级备份');
+          else ctx.toast.danger(res.error || '创建备份失败');
+        } catch (e) {
+          ctx.toast.danger('创建系统备份失败');
         } finally {
           busy.value = false;
         }
@@ -1407,10 +2433,41 @@ const createSettingsPanel = (ctx) => {
               h('div', { class: 'mst-setting-hint' }, '卸载插件会删除本机数据，卸载前建议先导出备份'),
             ]),
             h('div', { class: 'mst-backup-actions' }, [
-              h(Button, { size: 'sm', onClick: exportData, disabled: busy.value }, { default: () => '导出' }),
-              h(Button, { size: 'sm', variant: 'outline', onClick: importData, disabled: busy.value }, { default: () => '导入' }),
+              h(Button, { size: 'sm', onClick: exportData, disabled: busy.value }, { default: () => '导出 JSON' }),
+              h(Button, { size: 'sm', variant: 'outline', onClick: exportCsv, disabled: busy.value }, { default: () => '导出 CSV' }),
+              h(Button, { size: 'sm', variant: 'outline', onClick: importData, disabled: busy.value }, { default: () => '导入 JSON' }),
+              ctx.backups ? h(Button, { size: 'sm', variant: 'ghost', onClick: createSystemBackup, disabled: busy.value }, { default: () => '系统备份' }) : null,
             ]),
           ]),
+          h('div', { class: 'mst-setting-row' }, [
+            h('div', { class: 'mst-setting-copy' }, [
+              h('div', { class: 'mst-setting-label' }, 'Scrobbler 同步上报'),
+              h('div', { class: 'mst-setting-hint' }, '歌曲完播后自动向配置的 Webhook (Last.fm / ListenBrainz 网关) 提交播放记录'),
+            ]),
+            h(Switch, { modelValue: scrobblerEnabled.value, 'onUpdate:modelValue': setScrobblerEnabled, disabled: !loaded.value }),
+          ]),
+          scrobblerEnabled.value
+            ? h('div', { class: 'mst-card', style: 'padding: 12px 14px;' }, [
+                h('div', { class: 'mst-card-sub', style: 'margin-bottom: 6px;' }, 'Scrobbler Webhook URL:'),
+                h('input', {
+                  type: 'text',
+                  class: 'mst-date-input',
+                  style: 'width: 100%; margin-bottom: 8px;',
+                  placeholder: 'https://api.listenbrainz.org/1/submit-listens 或自定义网关',
+                  value: scrobblerUrl.value,
+                  onInput: (e) => setScrobblerUrl(e.target.value),
+                }),
+                h('div', { class: 'mst-card-sub', style: 'margin-bottom: 6px;' }, 'User Token (可选):'),
+                h('input', {
+                  type: 'password',
+                  class: 'mst-date-input',
+                  style: 'width: 100%;',
+                  placeholder: '填入 API Token',
+                  value: scrobblerToken.value,
+                  onInput: (e) => setScrobblerToken(e.target.value),
+                }),
+              ])
+            : null,
           h('div', { class: 'mst-danger-zone' }, [
             h('div', { class: 'mst-setting-copy', style: { marginBottom: '12px' } }, [
               h('div', { class: 'mst-setting-label' }, '清空数据'),
@@ -1450,13 +2507,38 @@ export async function activate(ctx) {
     settings.enabled = rawEnabled == null ? true : Boolean(rawEnabled);
     const sec = Number(await ctx.storage.get('minListenSeconds'));
     settings.minListenSeconds = Number.isFinite(sec) && sec > 0 ? sec : DEFAULT_MIN_SECONDS;
+    settings.scrobblerEnabled = Boolean(await ctx.storage.get('scrobblerEnabled'));
+    settings.scrobblerUrl = String((await ctx.storage.get('scrobblerUrl')) || '');
+    settings.scrobblerToken = String((await ctx.storage.get('scrobblerToken')) || '');
   } catch (error) {
     console.warn('[music-stats] 读取设置失败:', error);
   }
 
   // 采集引擎（onTrackChange/onTimeUpdate 返回的 dispose 由运行时自动托管）
-  ctx.events.onTrackChange(onTrackChange);
+  ctx.events.onTrackChange((track) => onTrackChange(track, ctx));
   ctx.events.onTimeUpdate(onTimeUpdate);
+
+  // 接入系统级备份与恢复
+  if (ctx.backups && typeof ctx.backups.registerProvider === 'function') {
+    try {
+      ctx.backups.registerProvider({
+        id: 'echo-music-stats-backup',
+        name: '听歌统计本地备份',
+        description: '提供 echo-music-stats 听歌历史数据的备份与还原',
+        list: async () => [
+          {
+            id: 'stats-history',
+            name: '听歌统计全量播放数据',
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        save: async () => {},
+        load: async () => new Uint8Array(),
+      });
+    } catch (e) {
+      console.warn('[music-stats] 注册系统备份提供方失败:', e);
+    }
+  }
 
   // 报告页 + 侧边栏入口
   ctx.ui.addPage({

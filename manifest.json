@@ -1,11 +1,15 @@
 {
   "id": "music-stats",
   "name": "听歌统计",
-  "version": "1.0.2",
-  "description": "本地听歌统计报告：自动记录每一次播放，生成总时长 / Top 歌手 / Top 歌曲 / 时段分布 / 音源占比 / 年度报告，数据 100% 保存在本机",
+  "version": "1.2.0",
+  "description": "本地听歌统计中心：深度挖掘播放行为数据，生成完播率/跳过率、单曲循环指数、365天听歌热力图、24小时生物钟、听歌画像徽章、榜单点击即播、JSON/CSV数据导入导出与备份恢复",
   "author": "xhd2005",
   "icon": "logo.png",
   "main": "index.js",
-  "capabilities": { "sqlite": true },
+  "capabilities": {
+    "sqlite": true,
+    "backups": true,
+    "unrestrictedNetwork": true
+  },
   "requires": { "echoMusicVersion": ">=2.2.7-beta.9" }
 }
