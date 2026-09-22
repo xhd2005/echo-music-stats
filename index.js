@@ -1069,27 +1069,31 @@ const CSS = `
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .mst-stat-tag {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
-  padding: 3px 9px;
-  border-radius: 8px;
+  padding: 4px 11px;
+  border-radius: 9px;
   background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
   color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .mst-stat-tag strong {
   color: var(--color-primary, #31cfa1);
   font-weight: 850;
+  font-variant-numeric: tabular-nums;
 }
 
 .mst-heatmap-wrap {
   overflow-x: auto;
-  padding: 8px 0;
+  padding: 6px 0 10px;
 }
 
 .mst-heatmap-wrap svg {
@@ -1097,27 +1101,59 @@ const CSS = `
   min-width: 780px;
 }
 
+.mst-heatmap-cell {
+  transition: transform 0.12s ease, stroke 0.12s ease, opacity 0.12s ease;
+  transform-origin: center;
+}
+
+.mst-heatmap-cell:hover {
+  stroke: var(--color-text-main, #f8fafc);
+  stroke-width: 1.5;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--color-primary, #31cfa1) 60%, transparent));
+}
+
 .mst-heatmap-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.08));
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  font-size: 11.5px;
+  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mst-heatmap-inspect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.mst-inspect-pill {
   font-size: 11px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
+  font-weight: 750;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary, #31cfa1) 16%, transparent);
+  color: var(--color-primary, #31cfa1);
+  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent);
 }
 
 .mst-heatmap-legend {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  flex-shrink: 0;
 }
 
 .mst-heatmap-legend-box {
-  width: 10.5px;
-  height: 10.5px;
-  border-radius: 2.5px;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
 }
 
 /* 24小时音乐生物钟 */
@@ -1441,6 +1477,30 @@ const CSS = `
   background: var(--color-bg-elevated, #fff);
   color: var(--color-primary, #31cfa1);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.mst-songs-scroll {
+  max-height: 430px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.mst-songs-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.mst-songs-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mst-songs-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-subtle, rgba(148, 163, 184, 0.22));
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+
+.mst-songs-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary, #31cfa1);
 }
 
 .mst-songs {
@@ -1836,7 +1896,7 @@ const renderDonut = (h, segments, total) => {
 };
 
 // 365天听歌热力图（GitHub 矩阵风，52列 x 7行）
-const renderHeatmapChart = (h, rows) => {
+const renderHeatmapChart = (h, rows, hoveredDay) => {
   const byDay = new Map(rows.map((r) => [String(r.day), { plays: Number(r.plays) || 0, ms: Number(r.ms) || 0 }]));
   const today = new Date();
   const days = [];
@@ -1854,14 +1914,55 @@ const renderHeatmapChart = (h, rows) => {
   let activeDays = 0;
   let totalYearPlays = 0;
   let totalYearMs = 0;
-  rows.forEach((r) => {
-    const p = Number(r.plays) || 0;
+  let maxStreak = 0;
+  let runningStreak = 0;
+
+  days.forEach((d) => {
+    const dayStr = formatDay(d);
+    const stat = byDay.get(dayStr);
+    const p = stat ? stat.plays : 0;
     if (p > 0) {
       activeDays += 1;
       totalYearPlays += p;
-      totalYearMs += Number(r.ms) || 0;
+      totalYearMs += stat.ms;
+      runningStreak += 1;
+      if (runningStreak > maxStreak) maxStreak = runningStreak;
+    } else {
+      runningStreak = 0;
     }
   });
+
+  // 当前连续打卡天数计算（从今日或昨日向前回溯）
+  const lastIdx = days.length - 1;
+  const todayStr = formatDay(days[lastIdx]);
+  const todayPlays = byDay.get(todayStr)?.plays || 0;
+  let currentStreak = 0;
+  let checkIdx = lastIdx;
+
+  if (todayPlays === 0 && checkIdx > 0) {
+    const yesterdayStr = formatDay(days[lastIdx - 1]);
+    const yesterdayPlays = byDay.get(yesterdayStr)?.plays || 0;
+    if (yesterdayPlays > 0) {
+      checkIdx = lastIdx - 1;
+    } else {
+      checkIdx = -1;
+    }
+  }
+
+  if (checkIdx >= 0) {
+    while (checkIdx >= 0) {
+      const dStr = formatDay(days[checkIdx]);
+      const p = byDay.get(dStr)?.plays || 0;
+      if (p > 0) {
+        currentStreak += 1;
+        checkIdx -= 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  const activeRate = Math.round((activeDays / 365) * 100);
 
   const cellSize = 11.5;
   const gap = 3.5;
@@ -1874,6 +1975,7 @@ const renderHeatmapChart = (h, rows) => {
   const rects = [];
   const monthLabels = [];
   let lastMonth = -1;
+  const weekDayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
   days.forEach((d, idx) => {
     const col = Math.floor(idx / 7);
@@ -1889,7 +1991,7 @@ const renderHeatmapChart = (h, rows) => {
           'text',
           {
             x: padL + col * (cellSize + gap),
-            y: padT - 6,
+            y: padT - 7,
             'font-size': 10,
             style: { fill: chartText },
           },
@@ -1898,25 +2000,40 @@ const renderHeatmapChart = (h, rows) => {
       );
     }
 
-    let fillColor = 'rgba(148, 163, 184, 0.09)';
+    let fillColor = 'rgba(148, 163, 184, 0.08)';
     if (plays >= 12) fillColor = 'var(--color-primary, #31cfa1)';
     else if (plays >= 6) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent)';
-    else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 52%, transparent)';
-    else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent)';
+    else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent)';
+    else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent)';
 
     rects.push(
       h(
         'rect',
         {
+          class: 'mst-heatmap-cell',
           x: padL + col * (cellSize + gap),
           y: padT + row * (cellSize + gap),
           width: cellSize,
           height: cellSize,
-          rx: 2.5,
+          rx: 3,
+          ry: 3,
           style: { fill: fillColor, cursor: 'pointer' },
+          onMouseenter: () => {
+            if (hoveredDay) {
+              hoveredDay.value = {
+                day: dayStr,
+                plays,
+                ms: stat.ms,
+                weekday: weekDayNames[d.getDay()],
+              };
+            }
+          },
+          onMouseleave: () => {
+            if (hoveredDay) hoveredDay.value = null;
+          },
         },
         [
-          h('title', null, `${dayStr}：${plays} 次播放 · ${formatMsShort(stat.ms)}`),
+          h('title', null, `${dayStr} (${weekDayNames[d.getDay()]})：${plays} 次播放 · ${formatMsShort(stat.ms)}`),
         ],
       ),
     );
@@ -1940,18 +2057,28 @@ const renderHeatmapChart = (h, rows) => {
     ),
   );
 
+  const curInspect = hoveredDay?.value;
+
   return h('div', null, [
     h('div', { class: 'mst-heatmap-stats' }, [
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '累计活跃：'),
-        h('strong', null, `${activeDays} 天`),
+        h('span', null, '📅 累计活跃：'),
+        h('strong', null, `${activeDays} / 365 天 (${activeRate}%)`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '年度总播放：'),
+        h('span', null, '🔥 当前连续：'),
+        h('strong', null, `${currentStreak} 天`),
+      ]),
+      h('div', { class: 'mst-stat-tag' }, [
+        h('span', null, '⚡ 最长连胜：'),
+        h('strong', null, `${maxStreak} 天`),
+      ]),
+      h('div', { class: 'mst-stat-tag' }, [
+        h('span', null, '🎵 年度总播放：'),
         h('strong', null, `${totalYearPlays} 次`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '累计实听：'),
+        h('span', null, '⏱️ 累计实听：'),
         h('strong', null, formatMsShort(totalYearMs)),
       ]),
     ]),
@@ -1969,12 +2096,35 @@ const renderHeatmapChart = (h, rows) => {
       ),
     ]),
     h('div', { class: 'mst-heatmap-footer' }, [
-      h('span', null, '提示：鼠标悬停任意色块可查看当日听歌次数与实听时长'),
+      h('div', { class: 'mst-heatmap-inspect' }, [
+        curInspect
+          ? [
+              h('span', { class: 'mst-inspect-pill' }, `${curInspect.day} ${curInspect.weekday}`),
+              h(
+                'span',
+                null,
+                curInspect.plays > 0
+                  ? `播放 ${curInspect.plays} 次 · 实听 ${formatMsShort(curInspect.ms)} · ${
+                      curInspect.plays >= 12
+                        ? '🔥 极高活跃'
+                        : curInspect.plays >= 6
+                        ? '✨ 高频聆听'
+                        : curInspect.plays >= 3
+                        ? '🎵 适度品味'
+                        : '🌱 轻松浅听'
+                    }`
+                  : '当日暂无听歌记录',
+              ),
+            ]
+          : [
+              h('span', { style: 'opacity: 0.8;' }, '过去 365 天听歌足迹矩阵 · 鼠标悬停任意色块可实时检视当日收听明细'),
+            ],
+      ]),
       h('div', { class: 'mst-heatmap-legend' }, [
         h('span', null, '少'),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.09);' }),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent);' }),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 52%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.08);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent);' }),
         h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent);' }),
         h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--color-primary, #31cfa1);' }),
         h('span', null, '多'),
@@ -2339,6 +2489,7 @@ const createReportPage = (ctx) => {
       const loading = ref(false);
       const error = ref('');
       const report = ref(null); // { kpi, topArtists, topSongs, trend, hours, sources }
+      const hoveredHeatmapDay = ref(null);
 
       const load = async () => {
         if (!db) {
@@ -2541,7 +2692,7 @@ const createReportPage = (ctx) => {
                                 '365天听歌足迹热力图',
                                 '全景回溯过去一年每一天的听歌频次与活跃深浅分布',
                               ),
-                              renderHeatmapChart(h, data.heatmap),
+                              renderHeatmapChart(h, data.heatmap, hoveredHeatmapDay),
                             ])
                           : null,
 
@@ -2738,6 +2889,11 @@ const renderSourceLegend = (h, items, total) =>
   ]);
 
 const renderArtistBars = (h, rows) => {
+  if (!rows || rows.length === 0) {
+    return h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [
+      h('p', null, '暂无歌手数据'),
+    ]);
+  }
   const maxMs = Math.max(1, ...rows.map((r) => Number(r.ms) || 0));
   return h('div', { class: 'mst-bars' }, [
     ...rows.map((r, i) => {
@@ -2756,48 +2912,54 @@ const renderArtistBars = (h, rows) => {
 };
 
 const renderSongList = (h, rows, ctx) =>
-  h('div', { class: 'mst-songs' }, [
-    ...rows.map((r, i) => {
-      const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
-      let metaText = `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`;
-      if (r.completion_rate !== undefined) {
-        metaText = `${Number(r.completed_count) || 0} 次完播 (${r.completion_rate}%) · ${formatMsShort(Number(r.ms) || 0)}`;
-      } else if (r.skip_rate !== undefined) {
-        metaText = `${Number(r.skipped_count) || 0} 次跳过 (${r.skip_rate}%) · ${Number(r.plays) || 0} 次尝试`;
-      }
-
-      return h(
-        'div',
-        {
-          class: 'mst-song-row',
-          key: `${String(r.title)}-${String(r.artist)}-${i}`,
-          style: { cursor: r.track_id ? 'pointer' : 'default' },
-          title: r.track_id ? '点击播放此歌曲' : String(r.title),
-          onClick: () => {
-            if (r.track_id) {
-              if (ctx?.player?.playTrack) void ctx.player.playTrack(r.track_id);
-              else if (ctx?.player?.play) void ctx.player.play(r.track_id);
+  rows && rows.length > 0
+    ? h('div', { class: 'mst-songs-scroll' }, [
+        h('div', { class: 'mst-songs' }, [
+          ...rows.map((r, i) => {
+            const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
+            let metaText = `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`;
+            if (r.completion_rate !== undefined) {
+              metaText = `${Number(r.completed_count) || 0} 次完播 (${r.completion_rate}%) · ${formatMsShort(Number(r.ms) || 0)}`;
+            } else if (r.skip_rate !== undefined) {
+              metaText = `${Number(r.skipped_count) || 0} 次跳过 (${r.skip_rate}%) · ${Number(r.plays) || 0} 次尝试`;
             }
-          },
-        },
-        [
-          h('span', { class: ['mst-song-rank', rankCls] }, String(i + 1)),
-          h('div', { class: 'mst-song-main' }, [
-            h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
-            h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
-          ]),
-          h('span', { class: 'mst-song-meta' }, metaText),
-          r.track_id
-            ? h(
-                'div',
-                { class: 'mst-song-play-icon', title: '试听' },
-                [h('span', { style: 'font-size: 11px; margin-left: 2px;' }, '▶')],
-              )
-            : null,
-        ],
-      );
-    }),
-  ]);
+
+            return h(
+              'div',
+              {
+                class: 'mst-song-row',
+                key: `${String(r.title)}-${String(r.artist)}-${i}`,
+                style: { cursor: r.track_id ? 'pointer' : 'default' },
+                title: r.track_id ? '点击播放此歌曲' : String(r.title),
+                onClick: () => {
+                  if (r.track_id) {
+                    if (ctx?.player?.playTrack) void ctx.player.playTrack(r.track_id);
+                    else if (ctx?.player?.play) void ctx.player.play(r.track_id);
+                  }
+                },
+              },
+              [
+                h('span', { class: ['mst-song-rank', rankCls] }, String(i + 1)),
+                h('div', { class: 'mst-song-main' }, [
+                  h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
+                  h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
+                ]),
+                h('span', { class: 'mst-song-meta' }, metaText),
+                r.track_id
+                  ? h(
+                      'div',
+                      { class: 'mst-song-play-icon', title: '试听' },
+                      [h('span', { style: 'font-size: 11px; margin-left: 2px;' }, '▶')],
+                    )
+                  : null,
+              ],
+            );
+          }),
+        ]),
+      ])
+    : h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [
+        h('p', null, '暂无该榜单维度的歌曲数据'),
+      ]);
 
 // ---- 设置面板 ----
 
