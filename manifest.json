@@ -1,15 +1,18 @@
 {
   "id": "music-stats",
   "name": "听歌统计",
-  "version": "1.2.2",
-  "description": "本地听歌统计中心：深度挖掘播放行为数据，生成完播率/跳过率、单曲循环指数、365天热力图(连胜统计与即指即显)、24小时生物钟、听歌画像徽章、歌手/歌曲对称滚动榜单、JSON/CSV数据导入导出与备份恢复",
+  "version": "1.3.0",
+  "description": "本地听歌统计中心：深度挖掘播放行为数据，支持多账号数据隔离、原生目录直接导出、365天热力图磁吸十字检视、24小时生物钟、哑光金属成就勋章与全矢量零 Emoji 设计",
   "author": "xhd2005",
   "icon": "logo.png",
   "main": "index.js",
   "capabilities": {
     "sqlite": true,
     "backups": true,
-    "unrestrictedNetwork": true
+    "unrestrictedNetwork": true,
+    "fs": true
   },
-  "requires": { "echoMusicVersion": ">=2.2.7-beta.9" }
+  "requires": {
+    "echoMusicVersion": ">=2.3.2-beta.17"
+  }
 }

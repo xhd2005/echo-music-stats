@@ -93,6 +93,93 @@ const formatDay = (date = new Date()) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
 // 毫秒 → 紧凑时长文案：<1h 显示「N 分钟」，否则「X 小时」或「X 小时 Y 分」
+
+const MST_ICONS = {
+  calendar: {
+    width: 24, height: 24,
+    body: "<rect x=\"3\" y=\"4\" width=\"18\" height=\"18\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M16 2v4M8 2v4M3 10h18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
+  },
+  flame: {
+    width: 24, height: 24,
+    body: "<path fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M12 2c.5 3 2.5 5 4.5 7.5 2 2.5 2.5 5.5 1.5 8.5-1.5 4-5.5 6-9 4.5-3.5-1.5-5-5-3.5-9 1-2.5 3-4.5 4-7 .5 2 1.5 3 2.5 3.5 0-2.5 0-5 0-7.5z\"/>",
+  },
+  zap: {
+    width: 24, height: 24,
+    body: "<path fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/>",
+  },
+  music: {
+    width: 24, height: 24,
+    body: "<circle cx=\"6\" cy=\"18\" r=\"3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><circle cx=\"18\" cy=\"16\" r=\"3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M9 18V5l12-2v13\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+  },
+  clock: {
+    width: 24, height: 24,
+    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M12 7v5l3 3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
+  },
+  headphones: {
+    width: 24, height: 24,
+    body: "<path d=\"M3 18v-6a9 9 0 0 1 18 0v6M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+  repeat: {
+    width: 24, height: 24,
+    body: "<path d=\"M17 2l4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+  },
+  globe: {
+    width: 24, height: 24,
+    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 0 1 4 9 15.3 15.3 0 0 1-4 9 15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+  activity: {
+    width: 24, height: 24,
+    body: "<path d=\"M22 12h-4l-3 9L9 3l-3 9H2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+  },
+  compass: {
+    width: 24, height: 24,
+    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><polygon points=\"16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76\" fill=\"currentColor\"/>",
+  },
+  sun: {
+    width: 24, height: 24,
+    body: "<circle cx=\"12\" cy=\"12\" r=\"4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+  briefcase: {
+    width: 24, height: 24,
+    body: "<rect x=\"2\" y=\"7\" width=\"20\" height=\"14\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+  sunset: {
+    width: 24, height: 24,
+    body: "<path d=\"M12 10V2M4.93 10.93l1.41-1.41M19.07 10.93l-1.41-1.41M2 18h20M20 10a8 8 0 0 0-16 0\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
+  },
+  moon: {
+    width: 24, height: 24,
+    body: "<path d=\"M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+  },
+  lock: {
+    width: 24, height: 24,
+    body: "<rect x=\"5\" y=\"11\" width=\"14\" height=\"10\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><circle cx=\"12\" cy=\"16\" r=\"1\"/><path d=\"M8 11V7a4 4 0 0 1 8 0v4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+  check: {
+    width: 24, height: 24,
+    body: "<path d=\"M5 12l5 5L20 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+  },
+  skip: {
+    width: 24, height: 24,
+    body: "<polygon points=\"5 4 15 12 5 20 5 4\" fill=\"currentColor\"/><line x1=\"19\" y1=\"5\" x2=\"19\" y2=\"19\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
+  },
+  user: {
+    width: 24, height: 24,
+    body: "<circle cx=\"12\" cy=\"7\" r=\"4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
+  },
+};
+
+const iconSvg = (h, iconData, { size = 16, className = "" } = {}) =>
+  h("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: size,
+    height: size,
+    viewBox: `0 0 ${iconData?.width || 24} ${iconData?.height || 24}`,
+    class: className,
+    "aria-hidden": "true",
+    innerHTML: iconData?.body ?? "",
+  });
+
 const formatMsShort = (ms) => {
   const totalMin = Math.max(0, Math.round(Number(ms || 0) / 60000));
   if (totalMin < 60) return `${totalMin} 分钟`;
@@ -2062,23 +2149,23 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
   return h('div', null, [
     h('div', { class: 'mst-heatmap-stats' }, [
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '📅 累计活跃：'),
+        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.calendar, { size: 12 }), h('span', null, '累计活跃：')]),
         h('strong', null, `${activeDays} / 365 天 (${activeRate}%)`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '🔥 当前连续：'),
+        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.flame, { size: 12 }), h('span', null, '当前连续：')]),
         h('strong', null, `${currentStreak} 天`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '⚡ 最长连胜：'),
+        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.zap, { size: 12 }), h('span', null, '最长连胜：')]),
         h('strong', null, `${maxStreak} 天`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '🎵 年度总播放：'),
+        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.music, { size: 12 }), h('span', null, '年度总播放：')]),
         h('strong', null, `${totalYearPlays} 次`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', null, '⏱️ 累计实听：'),
+        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.clock, { size: 12 }), h('span', null, '累计实听：')]),
         h('strong', null, formatMsShort(totalYearMs)),
       ]),
     ]),
@@ -2106,12 +2193,12 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
                 curInspect.plays > 0
                   ? `播放 ${curInspect.plays} 次 · 实听 ${formatMsShort(curInspect.ms)} · ${
                       curInspect.plays >= 12
-                        ? '🔥 极高活跃'
+                        ? '极高活跃'
                         : curInspect.plays >= 6
-                        ? '✨ 高频聆听'
+                        ? '高频聆听'
                         : curInspect.plays >= 3
-                        ? '🎵 适度品味'
-                        : '🌱 轻松浅听'
+                        ? '适度品味'
+                        : '轻松浅听'
                     }`
                   : '当日暂无听歌记录',
               ),
@@ -2149,10 +2236,10 @@ const renderCircadianClock = (h, rows) => {
   const total = Math.max(1, morning + work + dusk + night);
 
   const periods = [
-    { id: 'morning', name: '清晨启程', time: '06:00 - 11:00', icon: '🌅', plays: morning, cls: 'period-morning' },
-    { id: 'work', name: '专注工作', time: '11:00 - 18:00', icon: '💼', plays: work, cls: 'period-work' },
-    { id: 'dusk', name: '暮光晚霞', time: '18:00 - 22:00', icon: '🌆', plays: dusk, cls: 'period-dusk' },
-    { id: 'night', name: '深夜漫游', time: '22:00 - 06:00', icon: '🌌', plays: night, cls: 'period-night' },
+    { id: 'morning', name: '清晨启程', time: '06:00 - 11:00', icon: MST_ICONS.sun, plays: morning, cls: 'period-morning' },
+    { id: 'work', name: '专注工作', time: '11:00 - 18:00', icon: MST_ICONS.briefcase, plays: work, cls: 'period-work' },
+    { id: 'dusk', name: '暮光晚霞', time: '18:00 - 22:00', icon: MST_ICONS.sunset, plays: dusk, cls: 'period-dusk' },
+    { id: 'night', name: '深夜漫游', time: '22:00 - 06:00', icon: MST_ICONS.moon, plays: night, cls: 'period-night' },
   ];
 
   const maxPlays = Math.max(1, ...periods.map((p) => p.plays));
@@ -2167,10 +2254,10 @@ const renderCircadianClock = (h, rows) => {
         [
           h('div', { class: 'mst-circadian-head' }, [
             h('span', { class: 'mst-circadian-name' }, [
-              h('span', null, p.icon),
+              iconSvg(h, p.icon, { size: 14 }),
               h('span', null, p.name),
             ]),
-            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '✦ 峰值活跃') : null,
+            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '峰值活跃') : null,
           ]),
           h('div', { class: 'mst-circadian-time' }, p.time),
           h('div', { class: 'mst-circadian-percent' }, `${pct}%`),
@@ -2231,42 +2318,42 @@ const renderBadges = (h, data) => {
   const badges = [
     {
       id: 'night',
-      icon: '🌙',
+      icon: MST_ICONS.moon,
       title: '深夜哲学家',
       desc: '凌晨 0-6 点听歌占比 > 20%',
       unlocked: nightRate >= 0.2 && nightPlays >= 5,
     },
     {
       id: 'lossless',
-      icon: '🎧',
+      icon: MST_ICONS.headphones,
       title: '无损发烧友',
       desc: 'SQ / Hi-Res / 杜比全景声占比 > 40%',
       unlocked: hiresRate >= 0.4 && hiresPlays >= 5,
     },
     {
       id: 'loop',
-      icon: '🔁',
+      icon: MST_ICONS.repeat,
       title: '专一单曲狂人',
       desc: '单曲单日循环播放 >= 5 次',
       unlocked: Boolean(loopSong && Number(loopSong.daily_plays) >= 5),
     },
     {
       id: 'diverse',
-      icon: '🌍',
+      icon: MST_ICONS.globe,
       title: '百家争鸣',
       desc: '收听去重歌手 >= 20 位',
       unlocked: artistsCount >= 20,
     },
     {
       id: 'marathon',
-      icon: '🏃',
+      icon: MST_ICONS.activity,
       title: '音乐马拉松',
       desc: '累计实听时长 >= 30 小时',
       unlocked: totalMs >= 30 * 3600 * 1000,
     },
     {
       id: 'all_day',
-      icon: '🕊️',
+      icon: MST_ICONS.compass,
       title: '全天候候鸟',
       desc: '晨、昼、暮、夜皆有音乐相伴',
       unlocked: allSeason,
@@ -2276,14 +2363,14 @@ const renderBadges = (h, data) => {
   return h('div', { class: 'mst-badges-grid' }, [
     ...badges.map((b) =>
       h('div', { class: ['mst-badge-card', b.unlocked ? 'unlocked' : 'locked'], key: b.id }, [
-        h('div', { class: 'mst-badge-icon' }, b.icon),
+        h('div', { class: 'mst-badge-icon' }, [iconSvg(h, b.icon, { size: 18 })]),
         h('div', { class: 'mst-badge-info' }, [
           h('div', { class: 'mst-badge-title' }, b.title),
           h('div', { class: 'mst-badge-desc' }, b.desc),
           h(
             'div',
             { class: 'mst-badge-status' },
-            b.unlocked ? '已点亮 ✦' : '未解锁 🔒',
+            b.unlocked ? h('span', { style: 'display: inline-flex; align-items: center; gap: 3px;' }, [iconSvg(h, MST_ICONS.check, { size: 11 }), h('span', null, '已解锁')]) : h('span', { style: 'display: inline-flex; align-items: center; gap: 3px; opacity: 0.6;' }, [iconSvg(h, MST_ICONS.lock, { size: 10 }), h('span', null, '未达成')]),
           ),
         ]),
       ]),
@@ -2299,7 +2386,7 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
       ? h('div', { class: 'mst-highlight-card loop' }, [
           h('div', { class: 'mst-highlight-main' }, [
             h('div', { class: 'mst-highlight-tag' }, [
-              h('span', null, '🔥'),
+              iconSvg(h, MST_ICONS.flame, { size: 12 }),
               h('span', null, '单日循环神曲'),
               h('span', { class: 'mst-highlight-pill' }, loopSong.day),
             ]),
@@ -2343,7 +2430,7 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
       ? h('div', { class: 'mst-highlight-card night' }, [
           h('div', { class: 'mst-highlight-main' }, [
             h('div', { class: 'mst-highlight-tag' }, [
-              h('span', null, '🌌'),
+              iconSvg(h, MST_ICONS.moon, { size: 12 }),
               h('span', null, '深夜灵魂单曲 (00:00-06:00)'),
             ]),
             h(
@@ -2514,6 +2601,24 @@ const createReportPage = (ctx) => {
 
       onMounted(load);
       watch(range, load);
+      // 监听多账号切换（支持 EchoMusic beta.17 多账号会话隔离）
+      try {
+        const userStore = ctx.pinia?._s?.get("user");
+        if (userStore && typeof userStore.$subscribe === "function") {
+          let lastUid = String(userStore.info?.userid ?? userStore.info?.userId ?? "");
+          let lastRev = Number(userStore.accountRevision || 0);
+          userStore.$subscribe(() => {
+            const curUid = String(userStore.info?.userid ?? userStore.info?.userId ?? "");
+            const curRev = Number(userStore.accountRevision || 0);
+            if (curUid !== lastUid || curRev !== lastRev) {
+              lastUid = curUid;
+              lastRev = curRev;
+              void load();
+            }
+          });
+        }
+      } catch (err) {}
+
 
       return () => {
         const data = report.value;
@@ -2669,12 +2774,12 @@ const createReportPage = (ctx) => {
                         const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
 
                         return h('div', { class: 'mst-kpis' }, [
-                          kpiCard(h, '累计听歌时长', formatMsShort(Number(data.kpi.ms) || 0), '⏱️', '有效实听时长'),
-                          kpiCard(h, '累计播放次数', `${totalPlays} 次`, '🎵', '达标计入次数'),
-                          kpiCard(h, '完播率', `${compPct}%`, '🎧', `${compCount} 次完整听完`, compPct, false),
-                          kpiCard(h, '切歌跳过率', `${skipPct}%`, '⏭️', `${skipCount} 次快速跳过`, skipPct, true),
-                          kpiCard(h, '去重曲目', `${Number(data.kpi.songs) || 0} 首`, '🎼', '收听不同单曲'),
-                          kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`, '🎤', '探索音乐人谱系'),
+                          kpiCard(h, '累计听歌时长', formatMsShort(Number(data.kpi.ms) || 0), iconSvg(h, MST_ICONS.clock, { size: 14 }), '有效实听时长'),
+                          kpiCard(h, '累计播放次数', `${totalPlays} 次`, iconSvg(h, MST_ICONS.music, { size: 14 }), '达标计入次数'),
+                          kpiCard(h, '完播率', `${compPct}%`, iconSvg(h, MST_ICONS.headphones, { size: 14 }), `${compCount} 次完整听完`, compPct, false),
+                          kpiCard(h, '切歌跳过率', `${skipPct}%`, iconSvg(h, MST_ICONS.skip, { size: 14 }), `${skipCount} 次快速跳过`, skipPct, true),
+                          kpiCard(h, '去重曲目', `${Number(data.kpi.songs) || 0} 首`, iconSvg(h, MST_ICONS.music, { size: 14 }), '收听不同单曲'),
+                          kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`, iconSvg(h, MST_ICONS.user, { size: 14 }), '探索音乐人谱系'),
                         ]);
                       })(),
 
