@@ -1,0 +1,18 @@
+{
+  "name": "xhd2005 的 EchoMusic 插件源",
+  "homepage": "https://github.com/xhd2005/echo-music-stats",
+  "plugins": [
+    {
+      "id": "music-stats",
+      "repo": "xhd2005/echo-music-stats",
+      "tags": [
+        "统计",
+        "听歌报告",
+        "年度报告",
+        "排行榜",
+        "本地数据",
+        "多账号隔离"
+      ]
+    }
+  ]
+}

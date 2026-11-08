@@ -60,7 +60,38 @@ const MIGRATIONS = [
       `ALTER TABLE plays ADD COLUMN effect TEXT NOT NULL DEFAULT '';`,
     ],
   },
+  {
+    version: 4,
+    sql: [
+      `ALTER TABLE plays ADD COLUMN user_id TEXT NOT NULL DEFAULT '';`,
+      `CREATE INDEX IF NOT EXISTS idx_plays_user_started ON plays(user_id, started_at);`,
+    ],
+  },
 ];
+
+// 读取当前宿主登录账号信息（支持多账号隔离与旧版无账号数据归属）
+const readCurrentUser = (ctx) => {
+  try {
+    const userStore = ctx?.pinia?._s?.get('user') || ctx?.stores?.user;
+    const info = userStore?.info?.value ?? userStore?.info;
+    const userId = String(info?.userid ?? info?.userId ?? '').trim();
+    const nickname = String(info?.nickname ?? '').trim();
+    return { userId, nickname };
+  } catch {
+    return { userId: '', nickname: '' };
+  }
+};
+
+// 将旧版未标记账号 (user_id = '') 的历史播放记录自动归属给当前登录账号
+const claimUnassignedPlays = async (dbHandle, userId) => {
+  const uid = String(userId ?? '').trim();
+  if (!dbHandle || !uid) return;
+  try {
+    await dbHandle.run(`UPDATE plays SET user_id = ? WHERE user_id = ''`, [uid]);
+  } catch (err) {
+    console.warn('[music-stats] 归属旧版历史数据失败:', err);
+  }
+};
 
 // 时间范围（默认「本月」）
 const RANGE_OPTIONS = [
@@ -249,8 +280,8 @@ const insertPlay = async (meta) => {
   const day = formatDay(date);
   const res = await db.run(
     `INSERT OR IGNORE INTO plays
-      (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday, completed, skipped, quality, effect)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday, completed, skipped, quality, effect, user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       meta.trackId,
       meta.title,
@@ -268,6 +299,7 @@ const insertPlay = async (meta) => {
       meta.skipped ?? 0,
       meta.quality ?? '',
       meta.effect ?? '',
+      String(meta.userId ?? '').trim(),
     ],
   );
   if (!res.ok) console.warn('[music-stats] 写入播放记录失败:', res.error);
@@ -328,7 +360,8 @@ const settleCurrent = async (ctx) => {
 
   if (playedMs >= settings.minListenSeconds * 1000 || completed) {
     try {
-      await insertPlay({ ...rec, playedMs, completed, skipped });
+      const uid = rec.userId || readCurrentUser(ctx).userId;
+      await insertPlay({ ...rec, userId: uid, playedMs, completed, skipped });
       if (completed === 1 && ctx) {
         void triggerScrobble(ctx, { ...rec, playedMs });
       }
@@ -362,8 +395,11 @@ const onTrackChange = (track, ctx) => {
     );
   } catch {}
 
+  const { userId } = readCurrentUser(ctx);
+
   current = meta && settings.enabled ? {
     ...meta,
+    userId,
     quality,
     effect,
     startedAt: Date.now(),
@@ -458,10 +494,26 @@ const runQuery = async (dbHandle, sql, params) => {
   return res.rows || [];
 };
 
-const queryReport = async (dbHandle, range, granularity) => {
-  const params = [range.start, range.end];
+const applyUserScopeSql = (sql, uid, scopeMode) => {
+  if (scopeMode === 'current' && uid) {
+    return sql.replace('FROM plays WHERE ', "FROM plays WHERE (user_id = ? OR user_id = '') AND ");
+  }
+  return sql;
+};
+
+const queryReport = async (dbHandle, range, granularity, options = {}) => {
+  const uid = String(options.userId ?? '').trim();
+  const scopeMode = options.scopeMode || 'current';
+  if (uid) {
+    await claimUnassignedPlays(dbHandle, uid);
+  }
+  const scoped = scopeMode === 'current' && Boolean(uid);
+  const params = scoped ? [uid, range.start, range.end] : [range.start, range.end];
   const trendSql = granularity === 'month' ? QUERY_TREND_MONTH : QUERY_TREND_DAY;
   const heatmapStart = Date.now() - 365 * DAY_MS;
+  const heatmapParams = scoped
+    ? [uid, heatmapStart, Date.now() + DAY_MS]
+    : [heatmapStart, Date.now() + DAY_MS];
   const [
     kpiRows,
     topArtists,
@@ -477,19 +529,19 @@ const queryReport = async (dbHandle, range, granularity) => {
     effects,
     heatmap,
   ] = await Promise.all([
-    runQuery(dbHandle, QUERY_KPI, params),
-    runQuery(dbHandle, QUERY_TOP_ARTISTS, params),
-    runQuery(dbHandle, QUERY_TOP_SONGS, params),
-    runQuery(dbHandle, trendSql, params),
-    runQuery(dbHandle, QUERY_HOURS, params),
-    runQuery(dbHandle, QUERY_SOURCES, params),
-    runQuery(dbHandle, QUERY_COMPLETED_SONGS, params),
-    runQuery(dbHandle, QUERY_SKIPPED_SONGS, params),
-    runQuery(dbHandle, QUERY_LOOP_SONG, params),
-    runQuery(dbHandle, QUERY_NIGHT_SONG, params),
-    runQuery(dbHandle, QUERY_QUALITIES, params),
-    runQuery(dbHandle, QUERY_EFFECTS, params),
-    runQuery(dbHandle, QUERY_HEATMAP, [heatmapStart, Date.now() + DAY_MS]),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_KPI, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_TOP_ARTISTS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_TOP_SONGS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(trendSql, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_HOURS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_SOURCES, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_COMPLETED_SONGS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_SKIPPED_SONGS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_LOOP_SONG, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_NIGHT_SONG, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_QUALITIES, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_EFFECTS, uid, scopeMode), params),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_HEATMAP, uid, scopeMode), heatmapParams),
   ]);
   return {
     kpi: kpiRows[0] || null,
@@ -508,18 +560,69 @@ const queryReport = async (dbHandle, range, granularity) => {
   };
 };
 
-// ---- 数据备份（导出 / 导入） ----
+// ---- 数据备份（导出 / 导入，优先使用 ctx.fs 原生目录授权直接落盘） ----
+
+const exportFileToDiskOrBrowser = async (ctx, filename, contentString, mimeType = 'application/json') => {
+  const fsGrants =
+    ctx?.fs && typeof ctx.fs.requestDirectory === 'function'
+      ? ctx.fs
+      : ctx?.fs?.files && typeof ctx.fs.files.requestDirectory === 'function'
+        ? ctx.fs.files
+        : null;
+  if (fsGrants && typeof ctx?.fs?.writeFile === 'function') {
+    try {
+      const dirRes = await fsGrants.requestDirectory({
+        access: 'read-write',
+        purpose: '选择听歌统计数据导出保存目录',
+        persist: true,
+      });
+      if (dirRes && dirRes.canceled) {
+        return { canceled: true };
+      }
+      if (dirRes && dirRes.ok !== false && dirRes.directory?.id) {
+        const writeRes = await ctx.fs.writeFile(
+          {
+            kind: 'directory-file',
+            directoryId: dirRes.directory.id,
+            relativePath: filename,
+          },
+          contentString,
+          { encoding: 'utf8', overwrite: true },
+        );
+        if (writeRes && writeRes.ok !== false) {
+          return {
+            ok: true,
+            mode: 'native',
+            displayPath: dirRes.directory.displayPath || dirRes.directory.name || '所选目录',
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[music-stats] 原生目录导出异常，回退浏览器下载:', err);
+    }
+  }
+  const blob = new Blob([contentString], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return { ok: true, mode: 'browser', displayPath: '下载文件夹' };
+};
 
 // 备份只导出「源数据」列；派生列（day/month/hour/weekday）导入时按 started_at 重算，保证与采集一致
-const QUERY_BACKUP = `SELECT track_id, title, artist, album, source, duration, played_ms, started_at
+const QUERY_BACKUP = `SELECT track_id, title, artist, album, source, duration, played_ms, started_at, completed, skipped, quality, effect, user_id
   FROM plays ORDER BY started_at`;
 
 const IMPORT_SQL = `INSERT OR IGNORE INTO plays
-  (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  (track_id, title, artist, album, source, duration, played_ms, started_at, day, month, hour, weekday, completed, skipped, quality, effect, user_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 // 单行 → 插入参数（派生列由 started_at 重算）；无效行返回 null
-const importRowToParams = (row) => {
+const importRowToParams = (row, defaultUserId = '') => {
   const startedAt = Number(row?.started_at);
   const trackId = String(row?.track_id ?? '').trim();
   const title = String(row?.title ?? '').trim();
@@ -539,6 +642,11 @@ const importRowToParams = (row) => {
     day.slice(0, 7),
     d.getHours(),
     d.getDay(),
+    Number(row?.completed) ? 1 : 0,
+    Number(row?.skipped) ? 1 : 0,
+    String(row?.quality ?? '').trim(),
+    String(row?.effect ?? '').trim(),
+    String(row?.user_id ?? defaultUserId ?? '').trim(),
   ];
 };
 
@@ -2570,6 +2678,8 @@ const createReportPage = (ctx) => {
       const Icon = resolveComponent('Icon');
 
       const range = ref('month');
+      const accountScope = ref('current'); // 'current' | 'all'
+      const currentUser = ref(readCurrentUser(ctx));
       const songTab = ref('top');
       const customStart = ref('');
       const customEnd = ref('');
@@ -2585,11 +2695,16 @@ const createReportPage = (ctx) => {
         }
         loading.value = true;
         error.value = '';
+        currentUser.value = readCurrentUser(ctx);
         try {
           report.value = await queryReport(
             db,
             getRangeMs(range.value, customStart.value, customEnd.value),
             trendGranularity(range.value),
+            {
+              userId: currentUser.value.userId,
+              scopeMode: accountScope.value,
+            },
           );
         } catch (err) {
           console.warn('[music-stats] 查询报告失败:', err);
@@ -2601,7 +2716,8 @@ const createReportPage = (ctx) => {
 
       onMounted(load);
       watch(range, load);
-      // 监听多账号切换（支持 EchoMusic beta.17 多账号会话隔离）
+      watch(accountScope, load);
+      // 监听多账号切换（支持 EchoMusic v2.3.2+ 多账号会话隔离）
       try {
         const userStore = ctx.pinia?._s?.get("user");
         if (userStore && typeof userStore.$subscribe === "function") {
@@ -2613,6 +2729,7 @@ const createReportPage = (ctx) => {
             if (curUid !== lastUid || curRev !== lastRev) {
               lastUid = curUid;
               lastRev = curRev;
+              currentUser.value = readCurrentUser(ctx);
               void load();
             }
           });
@@ -2666,8 +2783,34 @@ const createReportPage = (ctx) => {
                   h('p', { class: 'mst-subtitle' }, '全方位回溯你的音乐足迹、聆听习惯与时空偏好'),
                 ]),
               ]),
-              // 工具栏：分段选择器 + 刷新按钮
+              // 工具栏：账号范围切换 + 分段选择器 + 刷新按钮
               h('div', { class: 'mst-toolbar' }, [
+                h('div', { class: 'mst-segmented', title: '切换当前登录账号或全部账号合并统计' }, [
+                  h(
+                    'button',
+                    {
+                      class: ['mst-seg-btn', accountScope.value === 'current' ? 'active' : ''],
+                      onClick: () => {
+                        accountScope.value = 'current';
+                      },
+                    },
+                    currentUser.value.nickname
+                      ? `当前 (${currentUser.value.nickname})`
+                      : currentUser.value.userId
+                        ? `当前 (${currentUser.value.userId})`
+                        : '当前账号',
+                  ),
+                  h(
+                    'button',
+                    {
+                      class: ['mst-seg-btn', accountScope.value === 'all' ? 'active' : ''],
+                      onClick: () => {
+                        accountScope.value = 'all';
+                      },
+                    },
+                    '全部账号',
+                  ),
+                ]),
                 h('div', { class: 'mst-segmented' }, [
                   ...RANGE_OPTIONS.map((opt) =>
                     h(
@@ -3183,7 +3326,7 @@ const createSettingsPanel = (ctx) => {
           const payload = JSON.stringify(
             {
               format: 'music-stats-backup',
-              version: 1,
+              version: 2,
               exportedAt: new Date().toISOString(),
               count: rows.length,
               rows,
@@ -3191,16 +3334,10 @@ const createSettingsPanel = (ctx) => {
             null,
             2,
           );
-          const blob = new Blob([payload], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `music-stats-backup-${formatDay()}.json`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          ctx.toast.success(`已导出 ${rows.length} 条 JSON 记录（保存到下载文件夹）`);
+          const filename = `music-stats-backup-${formatDay()}.json`;
+          const out = await exportFileToDiskOrBrowser(ctx, filename, payload, 'application/json');
+          if (out?.canceled) return;
+          ctx.toast.success(`已导出 ${rows.length} 条 JSON 记录（保存至：${out.displayPath}）`);
         } catch (error) {
           console.warn('[music-stats] 导出数据失败:', error);
           ctx.toast.danger('导出失败，请重试');
@@ -3239,24 +3376,22 @@ const createSettingsPanel = (ctx) => {
             'skipped',
             'quality',
             'effect',
+            'user_id',
           ];
           const escapeCsv = (str) => `"${String(str ?? '').replace(/"/g, '""')}"`;
           const lines = [headers.join(',')];
           for (const r of rows) {
             lines.push(headers.map((h) => escapeCsv(r[h])).join(','));
           }
-          const blob = new Blob(['\ufeff' + lines.join('\r\n')], {
-            type: 'text/csv;charset=utf-8;',
-          });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `music-stats-${formatDay()}.csv`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          ctx.toast.success(`已导出 ${rows.length} 条记录为 CSV 表格`);
+          const filename = `music-stats-${formatDay()}.csv`;
+          const out = await exportFileToDiskOrBrowser(
+            ctx,
+            filename,
+            '\ufeff' + lines.join('\r\n'),
+            'text/csv;charset=utf-8;',
+          );
+          if (out?.canceled) return;
+          ctx.toast.success(`已导出 ${rows.length} 条记录为 CSV 表格（保存至：${out.displayPath}）`);
         } catch (error) {
           console.warn('[music-stats] 导出 CSV 失败:', error);
           ctx.toast.danger('导出 CSV 失败');
@@ -3316,10 +3451,11 @@ const createSettingsPanel = (ctx) => {
         }
         busy.value = true;
         try {
+          const defaultUid = readCurrentUser(ctx).userId;
           const statements = [];
           let skipped = 0;
           for (const row of rows) {
-            const params = importRowToParams(row);
+            const params = importRowToParams(row, defaultUid);
             if (params) statements.push({ sql: IMPORT_SQL, params });
             else skipped += 1;
           }
@@ -3431,6 +3567,10 @@ export async function activate(ctx) {
     const opened = await ctx.sqlite.open({ name: DB_NAME, migrations: MIGRATIONS });
     if (opened.ok) {
       db = opened;
+      const { userId } = readCurrentUser(ctx);
+      if (userId) {
+        await claimUnassignedPlays(db, userId);
+      }
     } else {
       console.warn('[music-stats] 打开数据库失败:', opened.error);
     }
@@ -3455,27 +3595,8 @@ export async function activate(ctx) {
   ctx.events.onTrackChange((track) => onTrackChange(track, ctx));
   ctx.events.onTimeUpdate(onTimeUpdate);
 
-  // 接入系统级备份与恢复
-  if (ctx.backups && typeof ctx.backups.registerProvider === 'function') {
-    try {
-      ctx.backups.registerProvider({
-        id: 'echo-music-stats-backup',
-        name: '听歌统计本地备份',
-        description: '提供 echo-music-stats 听歌历史数据的备份与还原',
-        list: async () => [
-          {
-            id: 'stats-history',
-            name: '听歌统计全量播放数据',
-            createdAt: new Date().toISOString(),
-          },
-        ],
-        save: async () => {},
-        load: async () => new Uint8Array(),
-      });
-    } catch (e) {
-      console.warn('[music-stats] 注册系统备份提供方失败:', e);
-    }
-  }
+  // 说明：EchoMusic 宿主备份 (ctx.backups) 原生会自动将本插件的 SQLite 数据库 (plays) 与 KV 存储打包进备份包中，
+  // 无需注册空壳 registerProvider（registerProvider 仅用于扩展 WebDAV 等外部云存储后端）。
 
   // 报告页 + 侧边栏入口
   ctx.ui.addPage({

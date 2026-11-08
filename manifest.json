@@ -1,7 +1,7 @@
 {
   "id": "music-stats",
   "name": "听歌统计",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "本地听歌统计中心：深度挖掘播放行为数据，支持多账号数据隔离、原生目录直接导出、365天热力图磁吸十字检视、24小时生物钟、哑光金属成就勋章与全矢量零 Emoji 设计",
   "author": "xhd2005",
   "icon": "logo.png",
@@ -10,9 +10,9 @@
     "sqlite": true,
     "backups": true,
     "unrestrictedNetwork": true,
-    "fs": true
+    "localFiles": true
   },
   "requires": {
-    "echoMusicVersion": ">=2.3.2-beta.17"
+    "echoMusicVersion": ">=2.2.7-beta.9"
   }
 }
