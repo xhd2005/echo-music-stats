@@ -1,7 +1,7 @@
 {
   "id": "music-stats",
   "name": "听歌统计",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "本地听歌统计中心：原生极简第一方 UI、多账号隔离、吸顶筛选栏与原生日期选择器、RollingNumber 动态 KPI、365天热力图与 Top 歌手侧滑抽屉下钻（支持单条清理）、成就进度条与分级备份清空",
   "author": "xhd2005",
   "icon": "logo.png",

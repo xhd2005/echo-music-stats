@@ -1054,10 +1054,32 @@ const CSS = `
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 50px;
-  padding: 6px 0;
+  gap: 14px;
+  min-height: 52px;
+  padding: 2px 0;
   border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.mst-sticky-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.mst-main-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 48px;
+  background: transparent;
+  border: none;
+}
+
+.mst-sticky-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -1150,22 +1172,23 @@ const CSS = `
   box-sizing: border-box;
 }
 
-/* KPI 核心指标（无边框柔和圆角面板） */
+/* KPI 核心指标（4 列严格等高、统一 3 段垂直节奏） */
 .mst-kpis {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  align-items: stretch;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 960px) {
   .mst-kpis {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 680px) {
+@media (max-width: 520px) {
   .mst-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1173,12 +1196,14 @@ const CSS = `
   border: none;
   border-radius: var(--radius-card, 10px);
   background: var(--content-panel-bg);
-  padding: 14px 16px;
+  padding: 15px 18px;
   min-width: 0;
+  min-height: 110px;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   transition: background-color 0.16s ease;
 }
 
@@ -1206,7 +1231,7 @@ const CSS = `
 }
 
 .mst-kpi-value {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 800;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
@@ -1217,17 +1242,23 @@ const CSS = `
   line-height: 1.2;
 }
 
+.mst-kpi-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
 .mst-kpi-meter {
   height: 4px;
   border-radius: 999px;
   background: var(--control-muted-bg);
   overflow: hidden;
-  margin-top: 2px;
+  display: flex;
 }
 
 .mst-kpi-meter-fill {
   height: 100%;
-  border-radius: 999px;
   background: var(--color-primary);
   transition: width 0.35s ease;
 }
@@ -1237,9 +1268,12 @@ const CSS = `
 }
 
 .mst-kpi-sub {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 年度报告摘要面板 */
@@ -1318,11 +1352,16 @@ const CSS = `
   text-overflow: ellipsis;
 }
 
-/* 神曲循环与深夜灵魂双高亮卡 */
+/* 神曲循环与深夜灵魂双高亮卡（单张自动满宽，双张等高对齐） */
 .mst-highlight-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: stretch;
+}
+
+.mst-highlight-grid.is-single {
+  grid-template-columns: 1fr;
 }
 
 @media (max-width: 720px) {
@@ -1336,6 +1375,8 @@ const CSS = `
   border: none;
   border-radius: var(--radius-card, 10px);
   padding: 15px 18px;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1431,12 +1472,12 @@ const CSS = `
   transform: scale(0.96);
 }
 
-/* 卡片网格 */
+/* 卡片网格（严格等高 stretch 对齐） */
 .mst-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .mst-grid > .mst-full {
@@ -1452,13 +1493,24 @@ const CSS = `
   }
 }
 
-/* 通用分区容器（无外边框，柔和底色 var(--content-panel-bg)） */
+/* 通用分区容器（无外边框，柔和底色 var(--content-panel-bg)，flex 纵向等高撑满） */
 .mst-card {
   border: none;
   border-radius: var(--radius-card, 10px);
   background: var(--content-panel-bg);
   padding: 18px 20px;
   min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.mst-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .mst-card-head {
@@ -1691,11 +1743,12 @@ const CSS = `
   color: var(--color-text-secondary);
 }
 
-/* 成就徽章（带锁定进度条） */
+/* 成就徽章（3 列严格等高，已解锁与未解锁统一底栏对齐） */
 .mst-badges-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
+  align-items: stretch;
 }
 
 @media (max-width: 900px) {
@@ -1712,9 +1765,11 @@ const CSS = `
 
 .mst-badge-card {
   border-radius: var(--radius-item, 6px);
-  padding: 13px 15px;
+  padding: 14px 16px;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 12px;
   border: none;
   background: var(--control-muted-bg);
@@ -1791,7 +1846,8 @@ const CSS = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 5px;
+  margin-top: auto;
+  padding-top: 8px;
 }
 
 .mst-badge-progress-track {
@@ -1806,6 +1862,10 @@ const CSS = `
   border-radius: 999px;
   background: var(--color-primary);
   transition: width 0.35s ease;
+}
+
+.unlocked .mst-badge-progress-fill {
+  background: var(--state-success, var(--color-primary));
 }
 
 .mst-badge-progress-text {
@@ -3020,24 +3080,30 @@ const renderBadges = (h, data) => {
             ),
           ]),
           h('div', { class: 'mst-badge-desc' }, b.desc),
-          !b.unlocked
-            ? h('div', { class: 'mst-badge-progress-wrap' }, [
-                h('div', { class: 'mst-badge-progress-track' }, [
-                  h('div', { class: 'mst-badge-progress-fill', style: { width: `${b.progressPct}%` } }),
-                ]),
-                h('div', { class: 'mst-badge-progress-text' }, b.progressLabel),
-              ])
-            : null,
+          h('div', { class: 'mst-badge-progress-wrap' }, [
+            h('div', { class: 'mst-badge-progress-track' }, [
+              h('div', {
+                class: 'mst-badge-progress-fill',
+                style: { width: `${b.unlocked ? 100 : b.progressPct}%` },
+              }),
+            ]),
+            h(
+              'div',
+              { class: 'mst-badge-progress-text' },
+              b.unlocked ? `已达成 · ${b.progressLabel}` : b.progressLabel,
+            ),
+          ]),
         ]),
       ]),
     ),
   ]);
 };
 
-// 神曲循环狂热与深夜灵魂单曲（全矢量播放图标，已修复 SQL 缺失 track_id）
+// 神曲循环狂热与深夜灵魂单曲（单张自动铺满整行，双张等高对齐）
 const renderHighlights = (h, loopSong, nightSong, ctx) => {
   if (!loopSong && !nightSong) return null;
-  return h('div', { class: 'mst-highlight-grid' }, [
+  const isSingle = Boolean(loopSong) !== Boolean(nightSong);
+  return h('div', { class: ['mst-highlight-grid', isSingle ? 'is-single' : ''] }, [
     loopSong
       ? h('div', { class: 'mst-highlight-card loop' }, [
           h('div', { class: 'mst-highlight-main' }, [
@@ -3189,7 +3255,7 @@ const renderQualityAndEffects = (h, qualities, effects) => {
 
 // ---- 报告页子渲染 ----
 
-const kpiCard = (h, RollingNumber, label, value, icon, sub, pct, isSkip) =>
+const kpiCard = (h, RollingNumber, label, value, icon, sub, meterOpts = null) =>
   h('div', { class: 'mst-kpi' }, [
     h('div', { class: 'mst-kpi-top' }, [
       h('span', { class: 'mst-kpi-label' }, label),
@@ -3198,15 +3264,23 @@ const kpiCard = (h, RollingNumber, label, value, icon, sub, pct, isSkip) =>
     h('div', { class: 'mst-kpi-value', title: String(value) }, [
       RollingNumber ? h(RollingNumber, { value }) : String(value),
     ]),
-    pct !== undefined
-      ? h('div', { class: 'mst-kpi-meter' }, [
-          h('div', {
-            class: ['mst-kpi-meter-fill', isSkip ? 'is-skip' : ''],
-            style: { width: `${Math.min(100, Math.max(0, pct))}%` },
-          }),
-        ])
-      : null,
-    sub ? h('div', { class: 'mst-kpi-sub' }, sub) : null,
+    h('div', { class: 'mst-kpi-foot' }, [
+      meterOpts
+        ? h('div', { class: 'mst-kpi-meter' }, [
+            h('div', {
+              class: 'mst-kpi-meter-fill',
+              style: { width: `${Math.min(100, Math.max(0, meterOpts.completePct || 0))}%` },
+            }),
+            meterOpts.skipPct > 0
+              ? h('div', {
+                  class: 'mst-kpi-meter-fill is-skip',
+                  style: { width: `${Math.min(100 - (meterOpts.completePct || 0), Math.max(0, meterOpts.skipPct || 0))}%` },
+                })
+              : null,
+          ])
+        : null,
+      sub ? h('div', { class: 'mst-kpi-sub', title: String(sub) }, sub) : null,
+    ]),
   ]);
 
 const annualItem = (h, label, value) =>
@@ -4008,6 +4082,7 @@ const createReportPage = (ctx, SettingsPanelComp) => {
       const range = ref('30d');
       const accountScope = ref('current'); // 'current' | 'all'
       const currentUser = ref(readCurrentUser(ctx));
+      const mainTab = ref('overview'); // 'overview' | 'rankings' | 'habits'
       const songTab = ref('top');
       const customStart = ref('');
       const customEnd = ref('');
@@ -4506,47 +4581,91 @@ const createReportPage = (ctx, SettingsPanelComp) => {
             )
           : null;
 
-        const stickyBarContent = h('div', { class: 'mst-sticky-inner' }, [
-          h('div', { class: 'mst-sticky-row' }, [
-            h('div', { class: 'mst-filter-group', role: 'tablist', 'aria-label': '时间范围' }, [
-              ...RANGE_OPTIONS.map((opt) =>
+        const mainTabsControl =
+          Tabs && TabsList && TabsTrigger
+            ? h(
+                Tabs,
+                {
+                  modelValue: mainTab.value,
+                  'onUpdate:modelValue': (val) => {
+                    const next = String(val || 'overview');
+                    mainTab.value = ['overview', 'rankings', 'habits'].includes(next) ? next : 'overview';
+                  },
+                },
+                {
+                  default: () =>
+                    h(TabsList, { class: 'mst-main-tabs-list' }, {
+                      default: () => [
+                        h(TabsTrigger, { value: 'overview' }, { default: () => '总览' }),
+                        h(TabsTrigger, { value: 'rankings' }, { default: () => '榜单' }),
+                        h(TabsTrigger, { value: 'habits' }, { default: () => '习惯与画像' }),
+                      ],
+                    }),
+                },
+              )
+            : h('div', { class: 'mst-filter-group', role: 'tablist', 'aria-label': '统计分区' }, [
+                { key: 'overview', label: '总览' },
+                { key: 'rankings', label: '榜单' },
+                { key: 'habits', label: '习惯与画像' },
+              ].map((t) =>
                 h(
                   'button',
                   {
                     type: 'button',
-                    key: opt.key,
-                    class: ['mst-filter-btn', range.value === opt.key ? 'active' : ''],
-                    onClick: () => selectRange(opt.key),
+                    key: t.key,
+                    class: ['mst-filter-btn', mainTab.value === t.key ? 'active' : ''],
+                    onClick: () => {
+                      mainTab.value = t.key;
+                    },
                   },
-                  opt.label,
+                  t.label,
                 ),
-              ),
-            ]),
-            h('div', { class: 'mst-scope-group', title: '切换当前登录账号或全部账号合并统计' }, [
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: ['mst-filter-btn', accountScope.value === 'current' ? 'active' : ''],
-                  onClick: () => {
-                    accountScope.value = 'current';
+              ));
+
+        const stickyBarContent = h('div', { class: 'mst-sticky-inner' }, [
+          h('div', { class: 'mst-sticky-row' }, [
+            h('div', { class: 'mst-sticky-left' }, [mainTabsControl]),
+            h('div', { class: 'mst-sticky-right' }, [
+              h('div', { class: 'mst-filter-group', role: 'tablist', 'aria-label': '时间范围' }, [
+                ...RANGE_OPTIONS.map((opt) =>
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      key: opt.key,
+                      class: ['mst-filter-btn', range.value === opt.key ? 'active' : ''],
+                      onClick: () => selectRange(opt.key),
+                    },
+                    opt.label,
+                  ),
+                ),
+              ]),
+              h('div', { class: 'mst-scope-group', title: '切换当前登录账号或全部账号合并统计' }, [
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: ['mst-filter-btn', accountScope.value === 'current' ? 'active' : ''],
+                    onClick: () => {
+                      accountScope.value = 'current';
+                    },
                   },
-                },
-                currentUser.value.nickname
-                  ? `当前账号 (${currentUser.value.nickname})`
-                  : '当前账号',
-              ),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  class: ['mst-filter-btn', accountScope.value === 'all' ? 'active' : ''],
-                  onClick: () => {
-                    accountScope.value = 'all';
+                  currentUser.value.nickname
+                    ? `当前 (${currentUser.value.nickname})`
+                    : '当前账号',
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: ['mst-filter-btn', accountScope.value === 'all' ? 'active' : ''],
+                    onClick: () => {
+                      accountScope.value = 'all';
+                    },
                   },
-                },
-                '全部账号',
-              ),
+                  '全部账号',
+                ),
+              ]),
             ]),
           ]),
         ]);
@@ -4563,6 +4682,10 @@ const createReportPage = (ctx, SettingsPanelComp) => {
             )
           : h('div', { class: 'mst-sticky-bar' }, [stickyBarContent]);
 
+        const topSongsCount = (data?.topSongs || []).length;
+        const completedSongsCount = (data?.completedSongs || []).length;
+        const skippedSongsCount = (data?.skippedSongs || []).length;
+
         const songSubTabsNode =
           Tabs && TabsList && TabsTrigger
             ? h('div', { class: 'mst-song-tabs-bar' }, [
@@ -4578,16 +4701,16 @@ const createReportPage = (ctx, SettingsPanelComp) => {
                     default: () =>
                       h(TabsList, { class: 'mst-song-tabs-list' }, {
                         default: () => [
-                          h(TabsTrigger, { value: 'top' }, { default: () => `Top 播放 (${data.topSongs.length})` }),
+                          h(TabsTrigger, { value: 'top' }, { default: () => `Top 播放 (${topSongsCount})` }),
                           h(
                             TabsTrigger,
                             { value: 'completed' },
-                            { default: () => `最耐听 (${(data.completedSongs || []).length})` },
+                            { default: () => `最耐听 (${completedSongsCount})` },
                           ),
                           h(
                             TabsTrigger,
                             { value: 'skipped' },
-                            { default: () => `常切 (${(data.skippedSongs || []).length})` },
+                            { default: () => `常切 (${skippedSongsCount})` },
                           ),
                         ],
                       }),
@@ -4604,7 +4727,7 @@ const createReportPage = (ctx, SettingsPanelComp) => {
                       songTab.value = 'top';
                     },
                   },
-                  `Top 播放 (${data.topSongs.length})`,
+                  `Top 播放 (${topSongsCount})`,
                 ),
                 h(
                   'button',
@@ -4615,7 +4738,7 @@ const createReportPage = (ctx, SettingsPanelComp) => {
                       songTab.value = 'completed';
                     },
                   },
-                  `最耐听 (${(data.completedSongs || []).length})`,
+                  `最耐听 (${completedSongsCount})`,
                 ),
                 h(
                   'button',
@@ -4626,7 +4749,7 @@ const createReportPage = (ctx, SettingsPanelComp) => {
                       songTab.value = 'skipped';
                     },
                   },
-                  `常切 (${(data.skippedSongs || []).length})`,
+                  `常切 (${skippedSongsCount})`,
                 ),
               ]);
 
@@ -4727,218 +4850,220 @@ const createReportPage = (ctx, SettingsPanelComp) => {
                       h('p', null, '所选时间区间内暂无听歌记录，放首歌静静聆听吧'),
                     ]),
                   ])
-                : [
-                    // 年度报告摘要（选择「今年」时展示）
-                    annual
-                      ? h('div', { class: 'mst-annual' }, [
-                          h('div', { class: 'mst-annual-head' }, [
-                            h('div', { class: 'mst-annual-head-left' }, [
-                              h(Icon, { icon: ctx.icons.iconSparkles || ctx.icons.iconStar, width: 20, height: 20 }),
-                              h('h2', { class: 'mst-annual-title' }, '年度音乐足迹报告'),
-                            ]),
-                            h('span', { class: 'mst-annual-badge' }, `${new Date().getFullYear()} 年度专属`),
+                : (() => {
+                    const totalPlays = Number(data.kpi.n) || 0;
+                    const compCount = Number(data.kpi.completed_count) || 0;
+                    const skipCount = Number(data.kpi.skipped_count) || 0;
+                    const compPct = totalPlays > 0 ? Math.round((compCount / totalPlays) * 100) : 0;
+                    const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
+                    const activeDaysCount = Math.max(1, (data.trend || []).length);
+                    const avgMsPerActiveDay = Math.round((Number(data.kpi.ms) || 0) / activeDaysCount);
+
+                    // Tab 1：总览（年度摘要 + 4 格严格等高 KPI + 自适应高光单曲 + 365天热力图 + 趋势图）
+                    if (mainTab.value === 'overview') {
+                      return [
+                        annual
+                          ? h('div', { class: 'mst-annual' }, [
+                              h('div', { class: 'mst-annual-head' }, [
+                                h('div', { class: 'mst-annual-head-left' }, [
+                                  h(Icon, { icon: ctx.icons.iconSparkles || ctx.icons.iconStar, width: 20, height: 20 }),
+                                  h('h2', { class: 'mst-annual-title' }, '年度音乐足迹报告'),
+                                ]),
+                                h('span', { class: 'mst-annual-badge' }, `${new Date().getFullYear()} 年度专属`),
+                              ]),
+                              h('div', { class: 'mst-annual-grid' }, [
+                                annualItem(h, '年度实听总时长', formatMsShort(annual.totalMs)),
+                                annualItem(h, '年度总播放次数', `${annual.totalPlays} 次`),
+                                annualItem(h, '年度最爱歌手', annual.topArtist || '—'),
+                                annualItem(h, '年度最爱单曲', annual.topSong || '—'),
+                                annualItem(h, '最活跃音乐月份', annual.activeMonth ? `${annual.activeMonth} 月` : '—'),
+                                annualItem(h, '日均听歌时长', formatMsShort(annual.avgPerDay)),
+                              ]),
+                            ])
+                          : null,
+
+                        h('div', { class: 'mst-kpis' }, [
+                          kpiCard(
+                            h,
+                            RollingNumber,
+                            '累计听歌时长',
+                            formatMsShort(Number(data.kpi.ms) || 0),
+                            iconSvg(h, MST_ICONS.clock, { size: 14 }),
+                            `活跃日均 ${formatMsShort(avgMsPerActiveDay)}`,
+                          ),
+                          kpiCard(
+                            h,
+                            RollingNumber,
+                            '累计播放次数',
+                            `${totalPlays} 次`,
+                            iconSvg(h, MST_ICONS.music, { size: 14 }),
+                            `完整听完 ${compCount} 次 · 跳过 ${skipCount} 次`,
+                          ),
+                          kpiCard(
+                            h,
+                            RollingNumber,
+                            '完播率',
+                            `${compPct}%`,
+                            iconSvg(h, MST_ICONS.headphones, { size: 14 }),
+                            `切歌跳过率 ${skipPct}%`,
+                            { completePct: compPct, skipPct },
+                          ),
+                          kpiCard(
+                            h,
+                            RollingNumber,
+                            '音乐探索广度',
+                            `${Number(data.kpi.songs) || 0} 首`,
+                            iconSvg(h, MST_ICONS.user, { size: 14 }),
+                            `覆盖 ${Number(data.kpi.artists) || 0} 位不同歌手`,
+                          ),
+                        ]),
+
+                        renderHighlights(h, data.loopSong, data.nightSong, ctx),
+
+                        h('div', { class: 'mst-grid' }, [
+                          data.heatmap && data.heatmap.length > 0
+                            ? h('div', { class: 'mst-card mst-full' }, [
+                                sectionTitle(
+                                  Icon,
+                                  ctx.icons.iconCalendar || ctx.icons.iconClock,
+                                  '365天听歌足迹热力图',
+                                  '点击任意日期方格可展开当日播放流水并清理异常记录',
+                                ),
+                                h('div', { class: 'mst-card-body' }, [
+                                  renderHeatmapChart(h, data.heatmap, hoveredHeatmapDay, openDayDrawer),
+                                ]),
+                              ])
+                            : null,
+
+                          data.trend.length > 0
+                            ? h('div', { class: 'mst-card mst-full' }, [
+                                sectionTitle(
+                                  Icon,
+                                  ctx.icons.iconPulse || ctx.icons.iconClock,
+                                  '听歌时长趋势',
+                                  isMonthly ? '按月份聚合统计实听时长' : '按日期聚合统计实听时长',
+                                ),
+                                h('div', { class: 'mst-card-body' }, [
+                                  h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
+                                ]),
+                              ])
+                            : null,
+                        ]),
+                      ];
+                    }
+
+                    // Tab 2：榜单（严格等高双列：左 Top 歌手 + 右 歌曲榜单与完播分析）
+                    if (mainTab.value === 'rankings') {
+                      return [
+                        h('div', { class: 'mst-grid' }, [
+                          data.topArtists.length > 0
+                            ? h('div', { class: 'mst-card' }, [
+                                sectionTitle(
+                                  Icon,
+                                  ctx.icons.iconUsers || ctx.icons.iconTrophy,
+                                  'Top 歌手排行',
+                                  '按区间内累计有效实听时长降序 · 点击歌手查看曲目与月度趋势',
+                                ),
+                                h('div', { class: 'mst-card-body' }, [
+                                  renderArtistBars(h, data.topArtists, openArtistDrawer),
+                                ]),
+                              ])
+                            : null,
+
+                          h(
+                            'div',
+                            { class: ['mst-card', data.topArtists.length === 0 ? 'mst-full' : ''] },
+                            [
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconMusic,
+                                '歌曲榜单与完播分析',
+                                songTab.value === 'top'
+                                  ? '双击歌曲行或点击右侧播放图标即可试听'
+                                  : songTab.value === 'completed'
+                                    ? '最常听完的单曲榜（完播率 85% 以上）'
+                                    : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
+                              ),
+                              h('div', { class: 'mst-card-body' }, [
+                                songSubTabsNode,
+                                renderSongList(
+                                  h,
+                                  songTab.value === 'top'
+                                    ? data.topSongs
+                                    : songTab.value === 'completed'
+                                      ? data.completedSongs || []
+                                      : data.skippedSongs || [],
+                                  ctx,
+                                  {
+                                    activeTrackId: activeTrackId.value,
+                                    Popconfirm,
+                                    showDownload: songTab.value === 'top',
+                                  },
+                                ),
+                              ]),
+                            ],
+                          ),
+                        ]),
+                      ];
+                    }
+
+                    // Tab 3：习惯与画像（24小时生物钟 + 等高双列：24时段柱图 / 音源音质 + 3列等高成就徽章）
+                    return [
+                      h('div', { class: 'mst-grid' }, [
+                        h('div', { class: 'mst-card mst-full' }, [
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconClock,
+                            '24小时音乐生物钟',
+                            '晨起、工作、黄昏、深夜四大时段的听歌节奏与活跃峰值',
+                          ),
+                          h('div', { class: 'mst-card-body' }, [renderCircadianClock(h, data.hours)]),
+                        ]),
+
+                        h('div', { class: ['mst-card', sourceItems.total === 0 ? 'mst-full' : ''] }, [
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconClock,
+                            '每日 24 时段分布',
+                            '按 0–23 点各时段历史播放次数统计分布',
+                          ),
+                          h('div', { class: 'mst-card-body' }, [
+                            h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
                           ]),
-                          h('div', { class: 'mst-annual-grid' }, [
-                            annualItem(h, '年度实听总时长', formatMsShort(annual.totalMs)),
-                            annualItem(h, '年度总播放次数', `${annual.totalPlays} 次`),
-                            annualItem(h, '年度最爱歌手', annual.topArtist || '—'),
-                            annualItem(h, '年度最爱单曲', annual.topSong || '—'),
-                            annualItem(h, '最活跃音乐月份', annual.activeMonth ? `${annual.activeMonth} 月` : '—'),
-                            annualItem(h, '日均听歌时长', formatMsShort(annual.avgPerDay)),
-                          ]),
-                        ])
-                      : null,
+                        ]),
 
-                    // KPI 核心指标（接入宿主原生 RollingNumber）
-                    (() => {
-                      const totalPlays = Number(data.kpi.n) || 0;
-                      const compCount = Number(data.kpi.completed_count) || 0;
-                      const skipCount = Number(data.kpi.skipped_count) || 0;
-                      const compPct = totalPlays > 0 ? Math.round((compCount / totalPlays) * 100) : 0;
-                      const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
+                        sourceItems.total > 0
+                          ? h('div', { class: 'mst-card' }, [
+                              sectionTitle(
+                                Icon,
+                                ctx.icons.iconCloud || ctx.icons.iconHeadphones,
+                                '音源与音质画像',
+                                '音源来源渠道与解码音质分布',
+                              ),
+                              h('div', { class: 'mst-card-body' }, [
+                                h('div', { class: 'mst-donut-wrap' }, [
+                                  renderDonut(h, sourceItems.items, sourceItems.total),
+                                  renderSourceLegend(h, sourceItems.items, sourceItems.total),
+                                ]),
+                                data.qualities && data.qualities.length > 0
+                                  ? renderQualityAndEffects(h, data.qualities, data.effects || [])
+                                  : null,
+                              ]),
+                            ])
+                          : null,
 
-                      return h('div', { class: 'mst-kpis' }, [
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '累计听歌时长',
-                          formatMsShort(Number(data.kpi.ms) || 0),
-                          iconSvg(h, MST_ICONS.clock, { size: 14 }),
-                          '有效实听时长',
-                        ),
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '累计播放次数',
-                          `${totalPlays} 次`,
-                          iconSvg(h, MST_ICONS.music, { size: 14 }),
-                          '达标计入次数',
-                        ),
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '完播率',
-                          `${compPct}%`,
-                          iconSvg(h, MST_ICONS.headphones, { size: 14 }),
-                          `${compCount} 次完整听完`,
-                          compPct,
-                          false,
-                        ),
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '切歌跳过率',
-                          `${skipPct}%`,
-                          iconSvg(h, MST_ICONS.skip, { size: 14 }),
-                          `${skipCount} 次快速跳过`,
-                          skipPct,
-                          true,
-                        ),
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '去重曲目',
-                          `${Number(data.kpi.songs) || 0} 首`,
-                          iconSvg(h, MST_ICONS.music, { size: 14 }),
-                          '收听不同单曲',
-                        ),
-                        kpiCard(
-                          h,
-                          RollingNumber,
-                          '去重歌手',
-                          `${Number(data.kpi.artists) || 0} 位`,
-                          iconSvg(h, MST_ICONS.user, { size: 14 }),
-                          '探索音乐人谱系',
-                        ),
-                      ]);
-                    })(),
-
-                    // 单日循环神曲 & 深夜灵魂单曲
-                    renderHighlights(h, data.loopSong, data.nightSong, ctx),
-
-                    // 卡片网格区
-                    h('div', { class: 'mst-grid' }, [
-                      // 365天听歌热力图（点击任意日期打开右侧流水抽屉）
-                      data.heatmap && data.heatmap.length > 0
-                        ? h('div', { class: 'mst-card mst-full' }, [
-                            sectionTitle(
-                              Icon,
-                              ctx.icons.iconCalendar || ctx.icons.iconClock,
-                              '365天听歌足迹热力图',
-                              '点击任意日期方格可展开当日播放流水并清理异常记录',
-                            ),
-                            renderHeatmapChart(h, data.heatmap, hoveredHeatmapDay, openDayDrawer),
-                          ])
-                        : null,
-
-                      // 24小时音乐生物钟
-                      h('div', { class: 'mst-card mst-full' }, [
-                        sectionTitle(
-                          Icon,
-                          ctx.icons.iconClock,
-                          '24小时音乐生物钟',
-                          '晨起、工作、黄昏、深夜四大时段的听歌节奏与活跃峰值',
-                        ),
-                        renderCircadianClock(h, data.hours),
+                        h('div', { class: 'mst-card mst-full' }, [
+                          sectionTitle(
+                            Icon,
+                            ctx.icons.iconTrophy || ctx.icons.iconStar,
+                            '听歌画像成就徽章',
+                            '深度挖掘你的音乐习惯与行为数据，实时追踪每枚勋章达成进度',
+                          ),
+                          h('div', { class: 'mst-card-body' }, [renderBadges(h, data)]),
+                        ]),
                       ]),
-
-                      // 听歌个性成就徽章（带进度条）
-                      h('div', { class: 'mst-card mst-full' }, [
-                        sectionTitle(
-                          Icon,
-                          ctx.icons.iconTrophy || ctx.icons.iconStar,
-                          '听歌画像成就徽章',
-                          '深度挖掘你的音乐习惯与行为数据，实时追踪每枚勋章达成进度',
-                        ),
-                        renderBadges(h, data),
-                      ]),
-
-                      // 听歌时长趋势
-                      data.trend.length > 0
-                        ? h('div', { class: 'mst-card mst-full' }, [
-                            sectionTitle(
-                              Icon,
-                              ctx.icons.iconPulse || ctx.icons.iconClock,
-                              '听歌时长趋势',
-                              isMonthly ? '按月份聚合统计实听时长' : '按日期聚合统计实听时长',
-                            ),
-                            h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
-                          ])
-                        : null,
-
-                      // Top 歌手（点击歌手行下钻抽屉）
-                      data.topArtists.length > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(
-                              Icon,
-                              ctx.icons.iconUsers || ctx.icons.iconTrophy,
-                              'Top 歌手排行',
-                              '按区间内累计有效实听时长降序 · 点击歌手查看曲目与月度趋势',
-                            ),
-                            renderArtistBars(h, data.topArtists, openArtistDrawer),
-                          ])
-                        : null,
-
-                      // Top 歌曲（原生 Tabs + 双击播放 + 显式矢量播放与下载图标）
-                      h('div', { class: 'mst-card' }, [
-                        sectionTitle(
-                          Icon,
-                          ctx.icons.iconMusic,
-                          '歌曲榜单与完播分析',
-                          songTab.value === 'top'
-                            ? '双击歌曲行或点击右侧播放图标即可试听'
-                            : songTab.value === 'completed'
-                              ? '最常听完的单曲榜（完播率 85% 以上）'
-                              : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
-                        ),
-                        songSubTabsNode,
-                        renderSongList(
-                          h,
-                          songTab.value === 'top'
-                            ? data.topSongs
-                            : songTab.value === 'completed'
-                              ? data.completedSongs || []
-                              : data.skippedSongs || [],
-                          ctx,
-                          {
-                            activeTrackId: activeTrackId.value,
-                            Popconfirm,
-                            showDownload: songTab.value === 'top',
-                          },
-                        ),
-                      ]),
-
-                      // 每日 24 时段分布
-                      h('div', { class: 'mst-card' }, [
-                        sectionTitle(
-                          Icon,
-                          ctx.icons.iconClock,
-                          '每日 24 时段分布',
-                          '按 0–23 点各时段历史播放次数统计分布',
-                        ),
-                        h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
-                      ]),
-
-                      // 音源占比与音质画像
-                      sourceItems.total > 0
-                        ? h('div', { class: 'mst-card' }, [
-                            sectionTitle(
-                              Icon,
-                              ctx.icons.iconCloud || ctx.icons.iconHeadphones,
-                              '音源与音质画像',
-                              '音源来源渠道与解码音质分布',
-                            ),
-                            h('div', { class: 'mst-donut-wrap' }, [
-                              renderDonut(h, sourceItems.items, sourceItems.total),
-                              renderSourceLegend(h, sourceItems.items, sourceItems.total),
-                            ]),
-                            data.qualities && data.qualities.length > 0
-                              ? renderQualityAndEffects(h, data.qualities, data.effects || [])
-                              : null,
-                          ])
-                        : null,
-                    ]),
-                  ],
+                    ];
+                  })(),
         ]);
 
         const scrollInner = [headerNode, stickyNode, bodyContent];
