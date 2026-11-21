@@ -1,8 +1,8 @@
 {
   "id": "music-stats",
   "name": "听歌统计",
-  "version": "1.4.0",
-  "description": "本地听歌统计中心：深度挖掘播放行为数据，支持多账号数据隔离、原生目录直接导出、365天热力图磁吸十字检视、24小时生物钟、哑光金属成就勋章与全矢量零 Emoji 设计",
+  "version": "1.5.0",
+  "description": "本地听歌统计中心：原生极简第一方 UI、多账号隔离、吸顶筛选栏与原生日期选择器、RollingNumber 动态 KPI、365天热力图与 Top 歌手侧滑抽屉下钻（支持单条清理）、成就进度条与分级备份清空",
   "author": "xhd2005",
   "icon": "logo.png",
   "main": "index.js",

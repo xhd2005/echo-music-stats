@@ -1,15 +1,15 @@
-// 听歌统计插件
+// 听歌统计插件 (v1.5.0)
 // 本地化的听歌数据统计：静默记录每一次播放（SQLite 落库），生成
-// 总时长 / Top 歌手 / Top 歌曲 / 时段分布 / 音源占比 / 年度报告 可视化。
-// 数据 100% 保存在本机插件目录，无任何网络上报。
+// 总时长 / Top 歌手 / Top 歌曲 / 365天热力图下钻 / 24小时生物钟 / 成就进度 / 年度报告 可视化。
+// 数据 100% 保存在本机插件目录，无任何默认网络上报。
 //
 // 入口：
 // - 侧边栏「插件」分组 → 听歌统计（路由 /main/plugin/music-stats/report）
-// - 插件设置项（设置 → 插件管理 → 本插件）：启用开关 / 最短计入时长 / 清空数据
+// - 插件设置项（设置 → 插件管理 → 本插件）及报告页顶栏 ⚙ 设置抽屉
 // - 命令 music-stats:open（可在快捷键设置中绑定）
 //
-// 采集规则（单条可配、简单可预期）：
-// - 实听时长 played_ms >= minListenSeconds（默认 30s）才计入；低于阈值丢弃
+// 采集规则：
+// - 实听时长 played_ms >= minListenSeconds（默认 30s）或完播（>= 85%）才计入；低于阈值丢弃
 // - 去重：track_id + started_at 唯一索引兜底，同一首歌连续播放只记 1 条
 // - 暂停不重置、seek 取最大进度、切歌/停用立即结算上一首
 // - title 或 artist 解析为空 → 跳过（如无歌手信息的本地文件）
@@ -69,6 +69,40 @@ const MIGRATIONS = [
   },
 ];
 
+// 时间范围选项（吸顶筛选条）
+const RANGE_OPTIONS = [
+  { key: 'today', label: '今天' },
+  { key: '7d', label: '近 7 天' },
+  { key: '30d', label: '近 30 天' },
+  { key: 'year', label: '今年' },
+  { key: 'all', label: '全部' },
+  { key: 'custom', label: '自定义' },
+];
+
+// ---- 模块级运行状态 ----
+
+let db = null; // 打开的 sqlite 句柄（open 失败时保持 null，采集/查询降级跳过）
+let settings = {
+  enabled: true,
+  minListenSeconds: DEFAULT_MIN_SECONDS,
+  scrobblerEnabled: false,
+  scrobblerUrl: '',
+  scrobblerToken: '',
+};
+let current = null; // 当前正在监听的曲目 { trackId,title,artist,album,source,duration,startedAt,maxMs,userId,quality,effect }
+let disposeAll = null;
+const reportRefreshListeners = new Set();
+
+const notifyReportDataChanged = () => {
+  for (const fn of reportRefreshListeners) {
+    try {
+      fn();
+    } catch {}
+  }
+};
+
+// ---- 账号与日期工具 ----
+
 // 读取当前宿主登录账号信息（支持多账号隔离与旧版无账号数据归属）
 const readCurrentUser = (ctx) => {
   try {
@@ -93,124 +127,40 @@ const claimUnassignedPlays = async (dbHandle, userId) => {
   }
 };
 
-// 时间范围（默认「本月」）
-const RANGE_OPTIONS = [
-  { key: 'month', label: '本月' },
-  { key: '7d', label: '近 7 天' },
-  { key: '30d', label: '近 30 天' },
-  { key: 'year', label: '今年' },
-  { key: 'all', label: '全部' },
-  { key: 'custom', label: '自定义' },
-];
-
-// ---- 模块级运行状态 ----
-
-let db = null; // 打开的 sqlite 句柄（open 失败时保持 null，采集/查询降级跳过）
-let settings = {
-  enabled: true,
-  minListenSeconds: DEFAULT_MIN_SECONDS,
-  scrobblerEnabled: false,
-  scrobblerUrl: '',
-  scrobblerToken: '',
-};
-let current = null; // 当前正在监听的曲目 { trackId,title,artist,album,source,duration,startedAt,maxMs }
-let disposeAll = null;
-
-// ---- 工具函数 ----
-
 const pad = (n) => String(n).padStart(2, '0');
 
 const formatDay = (date = new Date()) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
-// 毫秒 → 紧凑时长文案：<1h 显示「N 分钟」，否则「X 小时」或「X 小时 Y 分」
-
-const MST_ICONS = {
-  calendar: {
-    width: 24, height: 24,
-    body: "<rect x=\"3\" y=\"4\" width=\"18\" height=\"18\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M16 2v4M8 2v4M3 10h18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
-  },
-  flame: {
-    width: 24, height: 24,
-    body: "<path fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M12 2c.5 3 2.5 5 4.5 7.5 2 2.5 2.5 5.5 1.5 8.5-1.5 4-5.5 6-9 4.5-3.5-1.5-5-5-3.5-9 1-2.5 3-4.5 4-7 .5 2 1.5 3 2.5 3.5 0-2.5 0-5 0-7.5z\"/>",
-  },
-  zap: {
-    width: 24, height: 24,
-    body: "<path fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M13 2L3 14h9l-1 8 10-12h-9l1-8z\"/>",
-  },
-  music: {
-    width: 24, height: 24,
-    body: "<circle cx=\"6\" cy=\"18\" r=\"3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><circle cx=\"18\" cy=\"16\" r=\"3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M9 18V5l12-2v13\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-  },
-  clock: {
-    width: 24, height: 24,
-    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M12 7v5l3 3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
-  },
-  headphones: {
-    width: 24, height: 24,
-    body: "<path d=\"M3 18v-6a9 9 0 0 1 18 0v6M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
-  repeat: {
-    width: 24, height: 24,
-    body: "<path d=\"M17 2l4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-  },
-  globe: {
-    width: 24, height: 24,
-    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 0 1 4 9 15.3 15.3 0 0 1-4 9 15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
-  activity: {
-    width: 24, height: 24,
-    body: "<path d=\"M22 12h-4l-3 9L9 3l-3 9H2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-  },
-  compass: {
-    width: 24, height: 24,
-    body: "<circle cx=\"12\" cy=\"12\" r=\"9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><polygon points=\"16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76\" fill=\"currentColor\"/>",
-  },
-  sun: {
-    width: 24, height: 24,
-    body: "<circle cx=\"12\" cy=\"12\" r=\"4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
-  briefcase: {
-    width: 24, height: 24,
-    body: "<rect x=\"2\" y=\"7\" width=\"20\" height=\"14\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
-  sunset: {
-    width: 24, height: 24,
-    body: "<path d=\"M12 10V2M4.93 10.93l1.41-1.41M19.07 10.93l-1.41-1.41M2 18h20M20 10a8 8 0 0 0-16 0\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
-  },
-  moon: {
-    width: 24, height: 24,
-    body: "<path d=\"M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-  },
-  lock: {
-    width: 24, height: 24,
-    body: "<rect x=\"5\" y=\"11\" width=\"14\" height=\"10\" rx=\"2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><circle cx=\"12\" cy=\"16\" r=\"1\"/><path d=\"M8 11V7a4 4 0 0 1 8 0v4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
-  check: {
-    width: 24, height: 24,
-    body: "<path d=\"M5 12l5 5L20 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-  },
-  skip: {
-    width: 24, height: 24,
-    body: "<polygon points=\"5 4 15 12 5 20 5 4\" fill=\"currentColor\"/><line x1=\"19\" y1=\"5\" x2=\"19\" y2=\"19\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>",
-  },
-  user: {
-    width: 24, height: 24,
-    body: "<circle cx=\"12\" cy=\"7\" r=\"4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/><path d=\"M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>",
-  },
+const formatTimeHm = (ms) => {
+  const d = new Date(Number(ms) || 0);
+  if (Number.isNaN(d.getTime())) return '--:--';
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-const iconSvg = (h, iconData, { size = 16, className = "" } = {}) =>
-  h("svg", {
-    xmlns: "http://www.w3.org/2000/svg",
-    width: size,
-    height: size,
-    viewBox: `0 0 ${iconData?.width || 24} ${iconData?.height || 24}`,
-    class: className,
-    "aria-hidden": "true",
-    innerHTML: iconData?.body ?? "",
-  });
+const parseLocalDateMs = (isoDay) => {
+  const str = String(isoDay || '').trim();
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return NaN;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
+  return d.getTime();
+};
 
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
+
+const getDefaultCustomRange = () => {
+  const today = startOfToday();
+  return {
+    start: formatDay(new Date(today - 29 * DAY_MS)),
+    end: formatDay(new Date(today)),
+  };
+};
+
+// 毫秒 → 紧凑时长文案：<1h 显示「N 分钟」，否则「X 小时」或「X 小时 Y 分」
 const formatMsShort = (ms) => {
   const totalMin = Math.max(0, Math.round(Number(ms || 0) / 60000));
   if (totalMin < 60) return `${totalMin} 分钟`;
@@ -219,20 +169,25 @@ const formatMsShort = (ms) => {
   return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
 };
 
-// 时间范围 key → [startMs, endMs)（本地时区午夜对齐，保证 day/month 分组干净）
-const startOfToday = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+const formatDurationClock = (ms) => {
+  const totalSec = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${pad(s)}`;
 };
 
+// 时间范围 key → [startMs, endMs)（本地时区午夜对齐，保证 day/month 分组干净）
 const getRangeMs = (key, customStart, customEnd) => {
   if (key === 'custom') {
-    const s = customStart ? new Date(customStart).getTime() : 0;
-    const e = customEnd ? new Date(customEnd).getTime() + DAY_MS : MAX_SAFE_MS;
-    return { start: Math.max(0, s), end: e };
+    const s = parseLocalDateMs(customStart);
+    const e = parseLocalDateMs(customEnd);
+    return {
+      start: Number.isFinite(s) ? Math.max(0, s) : 0,
+      end: Number.isFinite(e) ? e + DAY_MS : MAX_SAFE_MS,
+    };
   }
   const today = startOfToday();
+  if (key === 'today') return { start: today, end: today + DAY_MS };
   if (key === '7d') return { start: today - 6 * DAY_MS, end: today + DAY_MS };
   if (key === '30d') return { start: today - 29 * DAY_MS, end: today + DAY_MS };
   const now = new Date();
@@ -249,6 +204,204 @@ const getRangeMs = (key, customStart, customEnd) => {
     };
   }
   return { start: 0, end: MAX_SAFE_MS };
+};
+
+// 趋势粒度：短区间按天，长区间（今年/全部）按月
+const trendGranularity = (key) => (key === 'year' || key === 'all' ? 'month' : 'day');
+
+// ---- 矢量 SVG 图标集（全矢量零 Emoji / 零裸符号） ----
+
+const MST_ICONS = {
+  play: {
+    width: 24,
+    height: 24,
+    body: '<path d="M7 4.75v14.5c0 .7.77 1.13 1.37.76l11.25-7.25a.9.9 0 0 0 0-1.52L8.37 3.99A.9.9 0 0 0 7 4.75z" fill="currentColor"/>',
+  },
+  download: {
+    width: 24,
+    height: 24,
+    body: '<path d="M12 4v11m0 0l-4-4m4 4l4-4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  trash: {
+    width: 24,
+    height: 24,
+    body: '<path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  chevronRight: {
+    width: 24,
+    height: 24,
+    body: '<path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  calendar: {
+    width: 24,
+    height: 24,
+    body: '<rect x="3" y="4" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 2v4M8 2v4M3 10h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  },
+  flame: {
+    width: 24,
+    height: 24,
+    body: '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 2c.5 3 2.5 5 4.5 7.5 2 2.5 2.5 5.5 1.5 8.5-1.5 4-5.5 6-9 4.5-3.5-1.5-5-5-3.5-9 1-2.5 3-4.5 4-7 .5 2 1.5 3 2.5 3.5 0-2.5 0-5 0-7.5z"/>',
+  },
+  zap: {
+    width: 24,
+    height: 24,
+    body: '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+  },
+  music: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  clock: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  },
+  headphones: {
+    width: 24,
+    height: 24,
+    body: '<path d="M3 18v-6a9 9 0 0 1 18 0v6M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+  repeat: {
+    width: 24,
+    height: 24,
+    body: '<path d="M17 2l4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  globe: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15.3 15.3 0 0 1 4 9 15.3 15.3 0 0 1-4 9 15.3 15.3 0 0 1-4-9 15.3 15.3 0 0 1 4-9z" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+  activity: {
+    width: 24,
+    height: 24,
+    body: '<path d="M22 12h-4l-3 9L9 3l-3 9H2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  compass: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor"/>',
+  },
+  sun: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+  briefcase: {
+    width: 24,
+    height: 24,
+    body: '<rect x="2" y="7" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+  sunset: {
+    width: 24,
+    height: 24,
+    body: '<path d="M12 10V2M4.93 10.93l1.41-1.41M19.07 10.93l-1.41-1.41M2 18h20M20 10a8 8 0 0 0-16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  },
+  moon: {
+    width: 24,
+    height: 24,
+    body: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  lock: {
+    width: 24,
+    height: 24,
+    body: '<rect x="5" y="11" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="16" r="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+  check: {
+    width: 24,
+    height: 24,
+    body: '<path d="M5 12l5 5L20 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  skip: {
+    width: 24,
+    height: 24,
+    body: '<polygon points="5 4 15 12 5 20 5 4" fill="currentColor"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  },
+  user: {
+    width: 24,
+    height: 24,
+    body: '<circle cx="12" cy="7" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="none" stroke="currentColor" stroke-width="2"/>',
+  },
+};
+
+const iconSvg = (h, iconData, { size = 16, className = '' } = {}) =>
+  h('svg', {
+    xmlns: 'http://www.w3.org/2000/svg',
+    width: size,
+    height: size,
+    viewBox: `0 0 ${iconData?.width || 24} ${iconData?.height || 24}`,
+    class: className,
+    'aria-hidden': 'true',
+    innerHTML: iconData?.body ?? '',
+  });
+
+const loadHostComponent = (ctx, name) => {
+  const entry = ctx?.ui?.components?.[name];
+  if (typeof entry === 'function') {
+    return ctx.vue.defineAsyncComponent(entry);
+  }
+  if (entry && typeof entry === 'object') {
+    return entry;
+  }
+  return null;
+};
+
+const playTrackById = (ctx, trackId) => {
+  const id = String(trackId ?? '').trim();
+  if (!id) return;
+  if (ctx?.player?.playTrack) void ctx.player.playTrack(id);
+  else if (ctx?.player?.play) void ctx.player.play(id);
+};
+
+// 跨插件协同：检测 echo-music-download 桥并安全入队单曲下载
+const hasDownloadBridge = () =>
+  typeof globalThis !== 'undefined' && Boolean(globalThis.__echoMusicDownload);
+
+const enqueueSingleDownload = async (ctx, row) => {
+  const bridge = typeof globalThis !== 'undefined' ? globalThis.__echoMusicDownload : null;
+  if (!bridge) {
+    ctx?.toast?.info?.('未检测到「歌曲下载」插件');
+    return;
+  }
+  const trackId = String(row?.track_id ?? row?.id ?? '').trim();
+  const title = String(row?.title ?? '').trim();
+  const artist = String(row?.artist ?? '').trim();
+  const album = String(row?.album ?? '').trim();
+  const song = {
+    id: trackId,
+    hash: trackId,
+    title,
+    name: title,
+    artist,
+    albumName: album,
+    album,
+  };
+  try {
+    if (typeof bridge.enqueueSongs === 'function') {
+      await bridge.enqueueSongs([song]);
+      ctx?.toast?.success?.(`已将《${title || trackId}》加入下载队列`);
+      return;
+    }
+    if (typeof bridge.enqueueSong === 'function') {
+      await bridge.enqueueSong(song);
+      ctx?.toast?.success?.(`已将《${title || trackId}》加入下载队列`);
+      return;
+    }
+    if (typeof bridge.downloadSong === 'function') {
+      await bridge.downloadSong(song);
+      ctx?.toast?.success?.(`已将《${title || trackId}》加入下载队列`);
+      return;
+    }
+    if (typeof bridge.enqueue === 'function') {
+      await bridge.enqueue(song);
+      ctx?.toast?.success?.(`已将《${title || trackId}》加入下载队列`);
+      return;
+    }
+    ctx?.toast?.info?.('当前「歌曲下载」插件版本暂不支持直达单曲入队，请升级至 v2.4.0+');
+  } catch (err) {
+    console.warn('[music-stats] 跨插件加入下载失败:', err);
+    ctx?.toast?.danger?.('加入下载队列失败');
+  }
 };
 
 // ---- 元数据解析（与宿主 Song 模型对齐） ----
@@ -307,6 +460,37 @@ const insertPlay = async (meta) => {
 
 // ---- Scrobbler 云端互联（支持 Last.fm / ListenBrainz 等） ----
 
+const postScrobblerRequest = async (ctx, url, token, payload) => {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  if (ctx && ctx.net && typeof ctx.net.request === 'function') {
+    const res = await ctx.net.request({
+      url,
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    if (res && res.ok === false) {
+      throw new Error(res.error || `HTTP ${res.status || 'ERROR'}`);
+    }
+    if (res && typeof res.status === 'number' && res.status >= 400) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res;
+  }
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`);
+  }
+  return resp;
+};
+
 const triggerScrobble = async (ctx, rec) => {
   if (!settings.scrobblerEnabled || !settings.scrobblerUrl) return;
   try {
@@ -318,26 +502,7 @@ const triggerScrobble = async (ctx, rec) => {
       timestamp: Math.floor(rec.startedAt / 1000),
       service: 'EchoMusic',
     };
-    if (ctx && ctx.net && typeof ctx.net.request === 'function') {
-      await ctx.net.request({
-        url: settings.scrobblerUrl,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(settings.scrobblerToken ? { Authorization: `Bearer ${settings.scrobblerToken}` } : {}),
-        },
-        body: payload,
-      });
-    } else {
-      await fetch(settings.scrobblerUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(settings.scrobblerToken ? { Authorization: `Bearer ${settings.scrobblerToken}` } : {}),
-        },
-        body: JSON.stringify(payload),
-      });
-    }
+    await postScrobblerRequest(ctx, settings.scrobblerUrl, settings.scrobblerToken, payload);
   } catch (err) {
     console.warn('[music-stats] Scrobble 提交失败:', err);
   }
@@ -354,7 +519,10 @@ const settleCurrent = async (ctx) => {
   const durationMs = (rec.duration || 0) * 1000;
   const playedMs = rec.maxMs || 0;
   // 完播判定：播放时长达到 85% 以上（或对无时长音频播放超 2 分钟）
-  const completed = (durationMs > 0 && playedMs >= durationMs * 0.85) || (durationMs === 0 && playedMs >= 120000) ? 1 : 0;
+  const completed =
+    (durationMs > 0 && playedMs >= durationMs * 0.85) || (durationMs === 0 && playedMs >= 120000)
+      ? 1
+      : 0;
   // 切歌判定：播放少于 15 秒提前切歌
   const skipped = playedMs < 15000 ? 1 : 0;
 
@@ -383,28 +551,31 @@ const onTrackChange = (track, ctx) => {
   try {
     quality = String(
       track?.quality ||
-      track?.level ||
-      ctx?.player?.audioQuality?.value?.resolved ||
-      ctx?.stores?.player?.currentResolvedAudioQuality ||
-      '',
+        track?.level ||
+        ctx?.player?.audioQuality?.value?.resolved ||
+        ctx?.stores?.player?.currentResolvedAudioQuality ||
+        '',
     );
     effect = String(
       ctx?.player?.audioEffect?.value?.resolved ||
-      ctx?.stores?.player?.currentResolvedAudioEffect ||
-      '',
+        ctx?.stores?.player?.currentResolvedAudioEffect ||
+        '',
     );
   } catch {}
 
   const { userId } = readCurrentUser(ctx);
 
-  current = meta && settings.enabled ? {
-    ...meta,
-    userId,
-    quality,
-    effect,
-    startedAt: Date.now(),
-    maxMs: 0,
-  } : null;
+  current =
+    meta && settings.enabled
+      ? {
+          ...meta,
+          userId,
+          quality,
+          effect,
+          startedAt: Date.now(),
+          maxMs: 0,
+        }
+      : null;
 };
 
 const onTimeUpdate = (payload) => {
@@ -429,31 +600,36 @@ const QUERY_TOP_ARTISTS = `SELECT artist, COUNT(*) AS plays, SUM(played_ms) AS m
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY artist ORDER BY ms DESC LIMIT 10`;
 
-const QUERY_TOP_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays, SUM(played_ms) AS ms,
+const QUERY_TOP_SONGS = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  COUNT(*) AS plays, SUM(played_ms) AS ms,
   COALESCE(SUM(completed), 0) AS completed_count
   FROM plays WHERE started_at >= ? AND started_at < ?
-  GROUP BY title, artist ORDER BY plays DESC LIMIT 20`;
+  GROUP BY title, artist ORDER BY plays DESC, ms DESC LIMIT 20`;
 
-const QUERY_COMPLETED_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays,
+const QUERY_COMPLETED_SONGS = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  COUNT(*) AS plays, SUM(played_ms) AS ms,
   SUM(completed) AS completed_count,
   ROUND(CAST(SUM(completed) AS FLOAT) / COUNT(*) * 100, 1) AS completion_rate
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY title, artist HAVING completed_count > 0
   ORDER BY completed_count DESC, plays DESC LIMIT 15`;
 
-const QUERY_SKIPPED_SONGS = `SELECT track_id, title, artist, COUNT(*) AS plays,
+const QUERY_SKIPPED_SONGS = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  COUNT(*) AS plays, SUM(played_ms) AS ms,
   SUM(skipped) AS skipped_count,
   ROUND(CAST(SUM(skipped) AS FLOAT) / COUNT(*) * 100, 1) AS skip_rate
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY title, artist HAVING skipped_count > 0
   ORDER BY skipped_count DESC, plays DESC LIMIT 15`;
 
-const QUERY_LOOP_SONG = `SELECT title, artist, day, COUNT(*) AS daily_plays
+const QUERY_LOOP_SONG = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  day, COUNT(*) AS daily_plays
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY title, artist, day HAVING daily_plays >= 2
   ORDER BY daily_plays DESC LIMIT 1`;
 
-const QUERY_NIGHT_SONG = `SELECT title, artist, COUNT(*) AS night_plays
+const QUERY_NIGHT_SONG = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  COUNT(*) AS night_plays
   FROM plays WHERE hour >= 0 AND hour < 6 AND started_at >= ? AND started_at < ?
   GROUP BY title, artist ORDER BY night_plays DESC LIMIT 1`;
 
@@ -477,9 +653,6 @@ const QUERY_TREND_MONTH = `SELECT month AS bucket, SUM(played_ms) AS ms, COUNT(*
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY month ORDER BY month`;
 
-// 趋势粒度：短区间按天，长区间（今年/全部）按月
-const trendGranularity = (key) => (key === 'year' || key === 'all' ? 'month' : 'day');
-
 const QUERY_HOURS = `SELECT hour, COUNT(*) AS plays, SUM(played_ms) AS ms
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY hour ORDER BY hour`;
@@ -487,6 +660,21 @@ const QUERY_HOURS = `SELECT hour, COUNT(*) AS plays, SUM(played_ms) AS ms
 const QUERY_SOURCES = `SELECT source, COUNT(*) AS plays, SUM(played_ms) AS ms
   FROM plays WHERE started_at >= ? AND started_at < ?
   GROUP BY source ORDER BY plays DESC`;
+
+// 下钻查询：单日播放流水 / 歌手曲目与月度统计
+const QUERY_DAY_PLAYS = `SELECT id, track_id, title, artist, album, source, duration, played_ms, started_at, completed, skipped, quality, effect
+  FROM plays WHERE day = ?
+  ORDER BY started_at DESC LIMIT 200`;
+
+const QUERY_ARTIST_SONGS = `SELECT MAX(track_id) AS track_id, title, artist, MAX(album) AS album,
+  COUNT(*) AS plays, SUM(played_ms) AS ms,
+  COALESCE(SUM(completed), 0) AS completed_count
+  FROM plays WHERE started_at >= ? AND started_at < ? AND artist = ?
+  GROUP BY title, artist ORDER BY plays DESC, ms DESC LIMIT 30`;
+
+const QUERY_ARTIST_MONTHLY = `SELECT month, COUNT(*) AS plays, SUM(played_ms) AS ms
+  FROM plays WHERE artist = ?
+  GROUP BY month ORDER BY month DESC LIMIT 12`;
 
 const runQuery = async (dbHandle, sql, params) => {
   const res = await dbHandle.all(sql, params);
@@ -558,6 +746,32 @@ const queryReport = async (dbHandle, range, granularity, options = {}) => {
     effects,
     heatmap,
   };
+};
+
+const queryDayPlays = async (dbHandle, dayStr, options = {}) => {
+  const uid = String(options.userId ?? '').trim();
+  const scopeMode = options.scopeMode || 'current';
+  const scoped = scopeMode === 'current' && Boolean(uid);
+  const params = scoped ? [uid, dayStr] : [dayStr];
+  return runQuery(dbHandle, applyUserScopeSql(QUERY_DAY_PLAYS, uid, scopeMode), params);
+};
+
+const queryArtistDetail = async (dbHandle, artist, range, options = {}) => {
+  const uid = String(options.userId ?? '').trim();
+  const scopeMode = options.scopeMode || 'current';
+  const scoped = scopeMode === 'current' && Boolean(uid);
+  const songParams = scoped ? [uid, range.start, range.end, artist] : [range.start, range.end, artist];
+  const monthParams = scoped ? [uid, artist] : [artist];
+  const [songs, monthly] = await Promise.all([
+    runQuery(dbHandle, applyUserScopeSql(QUERY_ARTIST_SONGS, uid, scopeMode), songParams),
+    runQuery(dbHandle, applyUserScopeSql(QUERY_ARTIST_MONTHLY, uid, scopeMode), monthParams),
+  ]);
+  return { songs, monthly };
+};
+
+const deletePlayById = async (dbHandle, id) => {
+  if (!dbHandle || id == null) return { ok: false, error: '无效记录' };
+  return dbHandle.run('DELETE FROM plays WHERE id = ?', [id]);
 };
 
 // ---- 数据备份（导出 / 导入，优先使用 ctx.fs 原生目录授权直接落盘） ----
@@ -650,6 +864,84 @@ const importRowToParams = (row, defaultUserId = '') => {
   ];
 };
 
+const exportBackupJson = async (ctx) => {
+  if (!db) {
+    ctx?.toast?.danger?.('本地数据库未就绪');
+    return { ok: false };
+  }
+  const res = await db.all(QUERY_BACKUP);
+  if (!res.ok) throw new Error(res.error || '查询失败');
+  const rows = res.rows || [];
+  if (rows.length === 0) {
+    ctx?.toast?.info?.('暂无数据可导出');
+    return { ok: false, empty: true };
+  }
+  const payload = JSON.stringify(
+    {
+      format: 'music-stats-backup',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      count: rows.length,
+      rows,
+    },
+    null,
+    2,
+  );
+  const filename = `music-stats-backup-${formatDay()}.json`;
+  const out = await exportFileToDiskOrBrowser(ctx, filename, payload, 'application/json');
+  if (out?.canceled) return { canceled: true };
+  ctx?.toast?.success?.(`已导出 ${rows.length} 条 JSON 记录（保存至：${out.displayPath}）`);
+  return { ok: true, count: rows.length };
+};
+
+const exportBackupCsv = async (ctx) => {
+  if (!db) {
+    ctx?.toast?.danger?.('本地数据库未就绪');
+    return { ok: false };
+  }
+  const res = await db.all('SELECT * FROM plays ORDER BY started_at ASC');
+  if (!res.ok) throw new Error(res.error || '查询失败');
+  const rows = res.rows || [];
+  if (rows.length === 0) {
+    ctx?.toast?.info?.('暂无数据可导出');
+    return { ok: false, empty: true };
+  }
+  const headers = [
+    'track_id',
+    'title',
+    'artist',
+    'album',
+    'source',
+    'duration',
+    'played_ms',
+    'started_at',
+    'day',
+    'month',
+    'hour',
+    'weekday',
+    'completed',
+    'skipped',
+    'quality',
+    'effect',
+    'user_id',
+  ];
+  const escapeCsv = (str) => `"${String(str ?? '').replace(/"/g, '""')}"`;
+  const lines = [headers.join(',')];
+  for (const r of rows) {
+    lines.push(headers.map((col) => escapeCsv(r[col])).join(','));
+  }
+  const filename = `music-stats-${formatDay()}.csv`;
+  const out = await exportFileToDiskOrBrowser(
+    ctx,
+    filename,
+    '\ufeff' + lines.join('\r\n'),
+    'text/csv;charset=utf-8;',
+  );
+  if (out?.canceled) return { canceled: true };
+  ctx?.toast?.success?.(`已导出 ${rows.length} 条记录为 CSV 表格（保存至：${out.displayPath}）`);
+  return { ok: true, count: rows.length };
+};
+
 // ---- 音源标签与配色（实体 → 固定色，不随排名变化） ----
 
 const SOURCE_LABELS = {
@@ -689,7 +981,7 @@ const mostActiveMonth = (trend) => {
   return best;
 };
 
-// ---- 样式（插件 CSS 全局生效，严格 .mst- 前缀，仅用宿主 CSS 变量） ----
+// ---- 样式（严格 .mst- 前缀，遵循 EchoMusic surfaces.css / shapes.css 第一方原生极简规范） ----
 
 const CSS = `
 .mst-root {
@@ -700,193 +992,169 @@ const CSS = `
   position: relative;
 }
 
-.mst-page {
+.mst-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 顶栏 SliverHeader 内的信息与操作 */
+.mst-sliver-details {
   display: flex;
   flex-direction: column;
-  padding: 20px 32px 48px;
-  gap: 22px;
-  max-width: 1440px;
-  margin: 0 auto;
-  box-sizing: border-box;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 
-/* 页头与导航条 */
-.mst-header {
+.mst-sliver-meta-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 16px 20px;
-  border-radius: 18px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.05);
-  backdrop-filter: blur(12px);
-}
-
-.mst-header-left {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-
-.mst-header-icon-box {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 32%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-primary, #31cfa1);
-  flex-shrink: 0;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
-}
-
-.mst-header-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.mst-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
-.mst-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 850;
-  letter-spacing: -0.02em;
-  color: var(--color-text-main, #f8fafc);
-  line-height: 1.2;
-}
-
-.mst-privacy-badge {
+.mst-sliver-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  font-weight: 650;
-  padding: 2px 9px;
+  font-weight: 600;
+  padding: 2px 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent);
-  color: var(--color-primary, #31cfa1);
-  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent);
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
 }
 
-.mst-subtitle {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
-}
-
-/* 工具栏与时间范围筛选条 */
-.mst-toolbar {
+.mst-sliver-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
-.mst-segmented {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  border-radius: 12px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  gap: 2px;
-}
-
-.mst-seg-btn {
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
-  border-radius: 9px;
-  padding: 6px 13px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-}
-
-.mst-seg-btn:hover {
-  color: var(--color-text-main, #f8fafc);
-  background: var(--control-hover-bg, rgba(148, 163, 184, 0.12));
-}
-
-.mst-seg-btn.active {
-  background: var(--color-primary, #31cfa1);
-  color: var(--color-on-primary, #0f172a);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary, #31cfa1) 36%, transparent);
-}
-
-.mst-btn-action {
+.mst-sliver-actions .mst-btn-inner {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.08));
-  color: var(--color-text-main, #f8fafc);
-  border-radius: 11px;
-  padding: 7px 14px;
+}
+
+/* 吸顶筛选栏（严格使用 1px var(--border-subtle) 底线，零白线） */
+.mst-sticky-bar {
+  position: sticky;
+  z-index: 110;
+  background: var(--color-bg-main);
+}
+
+.mst-sticky-inner {
+  padding: 0 24px;
+}
+
+.mst-sticky-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 50px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.mst-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.mst-scope-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-control, 6px);
+  background: var(--control-muted-bg);
+}
+
+.mst-filter-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-control, 6px);
+  padding: 5px 11px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition: background-color 0.16s ease, color 0.16s ease;
+  white-space: nowrap;
 }
 
-.mst-btn-action:hover {
-  border-color: var(--color-primary, #31cfa1);
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent);
-  color: var(--color-primary, #31cfa1);
+.mst-filter-btn:hover {
+  color: var(--color-text-main);
+  background: var(--control-hover-bg);
 }
 
-/* 自定义日期筛选条 */
+.mst-filter-btn.active {
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
+  font-weight: 700;
+}
+
+/* 自定义日期区（采用宿主原生 DatePicker） */
 .mst-custom-range {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 16px;
-  border-radius: 12px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  border: 1px dashed var(--border-subtle, rgba(148, 163, 184, 0.2));
+  padding: 10px 14px;
+  border-radius: var(--radius-card, 10px);
+  background: var(--content-panel-bg);
   flex-wrap: wrap;
-  animation: mstFadeIn 0.2s ease-out;
+  animation: mstFadeIn 0.18s ease-out;
 }
 
-.mst-date-input {
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
-  color: var(--color-text-main, #f8fafc);
-  border-radius: 8px;
-  padding: 5px 10px;
+.mst-custom-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.mst-date-picker-box {
+  width: 158px;
+}
+
+.mst-date-fallback {
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control, 6px);
+  background: var(--field-bg);
+  color: var(--color-text-main);
   font-size: 12px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s;
 }
 
-.mst-date-input:focus {
-  border-color: var(--color-primary, #31cfa1);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
+.mst-custom-error {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--control-danger-text, var(--state-danger, #ef4444));
 }
 
-/* KPI 卡片网格 */
+/* 主内容区（左右 24px 网格与 SliverHeader 对齐） */
+.mst-page {
+  display: flex;
+  flex-direction: column;
+  padding: 18px 24px 48px;
+  gap: 18px;
+  box-sizing: border-box;
+}
+
+/* KPI 核心指标（无边框柔和圆角面板） */
 .mst-kpis {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 @media (max-width: 1180px) {
@@ -902,25 +1170,20 @@ const CSS = `
 }
 
 .mst-kpi {
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  border-radius: 16px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
-  padding: 16px 18px;
+  border: none;
+  border-radius: var(--radius-card, 10px);
+  background: var(--content-panel-bg);
+  padding: 14px 16px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 8px;
-  position: relative;
-  overflow: hidden;
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s, box-shadow 0.2s;
-  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.04);
+  gap: 6px;
+  transition: background-color 0.16s ease;
 }
 
 .mst-kpi:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
-  box-shadow: 0 6px 18px -3px rgba(0, 0, 0, 0.08);
+  background: var(--control-hover-bg);
 }
 
 .mst-kpi-top {
@@ -932,31 +1195,32 @@ const CSS = `
 
 .mst-kpi-label {
   font-size: 12px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 600;
+  color: var(--color-text-secondary);
 }
 
 .mst-kpi-icon {
-  font-size: 15px;
-  opacity: 0.85;
+  color: var(--icon-secondary, var(--color-text-secondary));
+  display: inline-flex;
+  align-items: center;
 }
 
 .mst-kpi-value {
-  font-size: 25px;
-  font-weight: 850;
-  letter-spacing: -0.025em;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text-main, #f8fafc);
+  color: var(--color-text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 
 .mst-kpi-meter {
   height: 4px;
   border-radius: 999px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  background: var(--control-muted-bg);
   overflow: hidden;
   margin-top: 2px;
 }
@@ -964,63 +1228,63 @@ const CSS = `
 .mst-kpi-meter-fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--color-primary, #31cfa1);
-  transition: width 0.4s ease;
+  background: var(--color-primary);
+  transition: width 0.35s ease;
 }
 
 .mst-kpi-meter-fill.is-skip {
-  background: #f43f5e;
+  background: var(--state-danger, #ef4444);
 }
 
 .mst-kpi-sub {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.65));
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 
-/* 年度报告高光卡片 */
+/* 年度报告摘要面板 */
 .mst-annual {
-  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 32%, transparent);
-  border-radius: 20px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary, #31cfa1) 12%, transparent) 0%, color-mix(in srgb, #6366f1 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.08))) 100%);
-  padding: 22px 24px;
-  box-shadow: 0 8px 30px -6px color-mix(in srgb, var(--color-primary, #31cfa1) 15%, transparent);
+  border: none;
+  border-radius: var(--radius-card, 10px);
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--content-panel-bg));
+  padding: 18px 20px;
 }
 
 .mst-annual-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
+  gap: 10px;
 }
 
 .mst-annual-head-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  color: var(--color-primary-text);
 }
 
 .mst-annual-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 850;
-  letter-spacing: -0.01em;
-  color: var(--color-primary, #31cfa1);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-primary-text);
 }
 
 .mst-annual-badge {
   font-size: 11px;
-  font-weight: 700;
-  padding: 3px 10px;
+  font-weight: 600;
+  padding: 2px 9px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 20%, transparent);
-  color: var(--color-primary, #31cfa1);
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
 }
 
 .mst-annual-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 @media (max-width: 768px) {
@@ -1033,33 +1297,32 @@ const CSS = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--color-bg-elevated, #fff) 50%, transparent);
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  padding: 11px 13px;
+  border-radius: var(--radius-item, 6px);
+  background: var(--content-panel-bg);
   min-width: 0;
 }
 
 .mst-annual-item-label {
   font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 600;
+  color: var(--color-text-secondary);
 }
 
 .mst-annual-item-value {
-  font-size: 15px;
-  font-weight: 850;
-  color: var(--color-text-main, #f8fafc);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 神曲循环与夜间专属双高亮卡 */
+/* 神曲循环与深夜灵魂双高亮卡 */
 .mst-highlight-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 @media (max-width: 720px) {
@@ -1070,118 +1333,109 @@ const CSS = `
 
 .mst-highlight-card {
   position: relative;
-  overflow: hidden;
-  border-radius: 18px;
-  padding: 18px 20px;
+  border: none;
+  border-radius: var(--radius-card, 10px);
+  padding: 15px 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.06));
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.05);
-}
-
-.mst-highlight-card.loop {
-  background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)) 100%);
-  border-color: color-mix(in srgb, #f59e0b 25%, transparent);
-}
-
-.mst-highlight-card.night {
-  background: linear-gradient(135deg, color-mix(in srgb, #8b5cf6 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.06)) 100%);
-  border-color: color-mix(in srgb, #8b5cf6 25%, transparent);
+  background: var(--content-panel-bg);
+  transition: background-color 0.16s ease;
 }
 
 .mst-highlight-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.1);
+  background: var(--control-hover-bg);
 }
 
 .mst-highlight-main {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   flex: 1;
 }
 
 .mst-highlight-tag {
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 11.5px;
+  font-weight: 700;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  color: var(--color-primary-text);
 }
 
 .mst-highlight-card.loop .mst-highlight-tag {
-  color: #f59e0b;
+  color: var(--state-warning, #d97706);
 }
 
 .mst-highlight-card.night .mst-highlight-tag {
-  color: #a78bfa;
+  color: var(--color-primary-text);
 }
 
 .mst-highlight-title {
-  font-size: 16px;
-  font-weight: 850;
-  color: var(--color-text-main, #f8fafc);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text-main);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: color 0.15s ease;
 }
 
 .mst-highlight-title:hover {
-  color: var(--color-primary, #31cfa1);
+  color: var(--color-primary-text);
 }
 
 .mst-highlight-sub {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 500;
+  color: var(--color-text-secondary);
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .mst-highlight-pill {
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   padding: 1px 7px;
   border-radius: 999px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  background: var(--control-muted-bg);
+  color: var(--color-text-secondary);
 }
 
 .mst-play-circle-btn {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
-  color: var(--color-text-main, #f8fafc);
-  display: flex;
+  border: none;
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.16s ease, transform 0.12s ease;
 }
 
 .mst-play-circle-btn:hover {
-  background: var(--color-primary, #31cfa1);
-  color: var(--color-on-primary, #0f172a);
-  border-color: var(--color-primary, #31cfa1);
-  transform: scale(1.08);
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+  background: var(--control-accent-hover-bg);
+  transform: scale(1.05);
 }
 
-/* 卡片网格布局 */
+.mst-play-circle-btn:active {
+  transform: scale(0.96);
+}
+
+/* 卡片网格 */
 .mst-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 20px;
+  gap: 16px;
   align-items: start;
 }
 
@@ -1198,14 +1452,13 @@ const CSS = `
   }
 }
 
-/* 通用容器卡片 */
+/* 通用分区容器（无外边框，柔和底色 var(--content-panel-bg)） */
 .mst-card {
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  border-radius: 18px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  padding: 20px 22px;
+  border: none;
+  border-radius: var(--radius-card, 10px);
+  background: var(--content-panel-bg);
+  padding: 18px 20px;
   min-width: 0;
-  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.04);
 }
 
 .mst-card-head {
@@ -1214,21 +1467,23 @@ const CSS = `
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .mst-card-head-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .mst-card-icon-pill {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 14%, transparent);
-  color: var(--color-primary, #31cfa1);
-  display: flex;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-control, 6px);
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
@@ -1236,17 +1491,16 @@ const CSS = `
 
 .mst-card-title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
-  letter-spacing: -0.01em;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--color-text-main);
 }
 
 .mst-card-sub {
   margin: 2px 0 0;
   font-size: 11.5px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.75));
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 
 .mst-chart-scroll {
@@ -1262,33 +1516,32 @@ const CSS = `
 .mst-heatmap-stats {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .mst-stat-tag {
   font-size: 11.5px;
-  font-weight: 700;
-  padding: 4px 11px;
-  border-radius: 9px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-control, 6px);
+  background: var(--control-muted-bg);
+  color: var(--color-text-secondary);
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
 .mst-stat-tag strong {
-  color: var(--color-primary, #31cfa1);
-  font-weight: 850;
+  color: var(--color-primary-text);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .mst-heatmap-wrap {
   overflow-x: auto;
-  padding: 6px 0 10px;
+  padding: 4px 0 8px;
 }
 
 .mst-heatmap-wrap svg {
@@ -1297,25 +1550,23 @@ const CSS = `
 }
 
 .mst-heatmap-cell {
-  transition: transform 0.12s ease, stroke 0.12s ease, opacity 0.12s ease;
-  transform-origin: center;
+  transition: stroke 0.12s ease, opacity 0.12s ease;
 }
 
 .mst-heatmap-cell:hover {
-  stroke: var(--color-text-main, #f8fafc);
-  stroke-width: 1.5;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--color-primary, #31cfa1) 60%, transparent));
+  stroke: var(--color-text-main);
+  stroke-width: 1.4;
 }
 
 .mst-heatmap-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
+  margin-top: 8px;
   padding-top: 10px;
-  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  border-top: 1px solid var(--border-subtle);
   font-size: 11.5px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  color: var(--color-text-secondary);
   gap: 12px;
   flex-wrap: wrap;
 }
@@ -1325,17 +1576,16 @@ const CSS = `
   align-items: center;
   gap: 8px;
   min-width: 0;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .mst-inspect-pill {
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 700;
   padding: 2px 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 16%, transparent);
-  color: var(--color-primary, #31cfa1);
-  border: 1px solid color-mix(in srgb, var(--color-primary, #31cfa1) 28%, transparent);
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
 }
 
 .mst-heatmap-legend {
@@ -1355,7 +1605,7 @@ const CSS = `
 .mst-circadian-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 @media (max-width: 800px) {
@@ -1365,50 +1615,30 @@ const CSS = `
 }
 
 .mst-circadian-card {
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
-  border-radius: 14px;
-  padding: 14px 16px;
+  background: var(--control-muted-bg);
+  border: none;
+  border-radius: var(--radius-item, 6px);
+  padding: 13px 15px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  position: relative;
-  overflow: hidden;
-  transition: all 0.2s ease;
-}
-
-.mst-circadian-card.period-morning {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
-  border-color: rgba(245, 158, 11, 0.18);
-}
-.mst-circadian-card.period-work {
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
-  border-color: rgba(14, 165, 233, 0.18);
-}
-.mst-circadian-card.period-dusk {
-  background: linear-gradient(135deg, rgba(244, 63, 94, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
-  border-color: rgba(244, 63, 94, 0.18);
-}
-.mst-circadian-card.period-night {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.06) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.04)) 100%);
-  border-color: rgba(139, 92, 246, 0.18);
+  gap: 6px;
 }
 
 .mst-circadian-card.mst-peak {
-  box-shadow: 0 4px 18px -2px color-mix(in srgb, var(--color-primary, #31cfa1) 22%, transparent);
-  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 45%, transparent);
+  background: var(--control-active-bg);
 }
 
 .mst-circadian-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
 }
 
 .mst-circadian-name {
   font-size: 13px;
-  font-weight: 750;
-  color: var(--color-text-main, #f8fafc);
+  font-weight: 700;
+  color: var(--color-text-main);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1416,57 +1646,56 @@ const CSS = `
 
 .mst-circadian-peak-badge {
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
   padding: 2px 7px;
   border-radius: 999px;
-  background: var(--color-primary, #31cfa1);
-  color: var(--color-on-primary, #0f172a);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--color-primary, #31cfa1) 40%, transparent);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
 }
 
 .mst-circadian-time {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.75));
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 
 .mst-circadian-percent {
-  font-size: 22px;
-  font-weight: 850;
+  font-size: 20px;
+  font-weight: 800;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-  color: var(--color-text-main, #f8fafc);
+  color: var(--color-text-main);
 }
 
 .mst-circadian-bar-bg {
-  height: 5px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  background: var(--control-track-bg);
   overflow: hidden;
 }
 
 .mst-circadian-bar-fill {
   height: 100%;
   border-radius: 999px;
-  transition: width 0.4s ease;
+  transition: width 0.35s ease;
 }
 
-.period-morning .mst-circadian-bar-fill { background: #f59e0b; }
-.period-work .mst-circadian-bar-fill { background: #0ea5e9; }
-.period-dusk .mst-circadian-bar-fill { background: #f43f5e; }
-.period-night .mst-circadian-bar-fill { background: #8b5cf6; }
+.period-morning .mst-circadian-bar-fill { background: #d97706; }
+.period-work .mst-circadian-bar-fill { background: #0284c7; }
+.period-dusk .mst-circadian-bar-fill { background: #e11d48; }
+.period-night .mst-circadian-bar-fill { background: var(--color-primary); }
 
 .mst-circadian-plays {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+  font-weight: 500;
+  color: var(--color-text-secondary);
 }
 
-/* 听歌个性成就徽章 */
+/* 成就徽章（带锁定进度条） */
 .mst-badges-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 @media (max-width: 900px) {
@@ -1482,49 +1711,35 @@ const CSS = `
 }
 
 .mst-badge-card {
-  border-radius: 14px;
-  padding: 14px 16px;
+  border-radius: var(--radius-item, 6px);
+  padding: 13px 15px;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.14));
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
+  align-items: flex-start;
+  gap: 12px;
+  border: none;
+  background: var(--control-muted-bg);
+  transition: background-color 0.16s ease;
 }
 
 .mst-badge-card.unlocked {
-  border-color: color-mix(in srgb, var(--color-primary, #31cfa1) 38%, transparent);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary, #31cfa1) 8%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05))) 0%, var(--color-bg-elevated, rgba(148, 163, 184, 0.05)) 100%);
-  box-shadow: 0 4px 14px -3px color-mix(in srgb, var(--color-primary, #31cfa1) 15%, transparent);
-}
-
-.mst-badge-card.locked {
-  opacity: 0.6;
-  filter: grayscale(0.5);
-  border-style: dashed;
-}
-
-.mst-badge-card:hover {
-  transform: translateY(-2px);
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--control-muted-bg));
 }
 
 .mst-badge-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-control, 6px);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.1));
+  background: var(--control-bg);
+  color: var(--color-text-secondary);
   flex-shrink: 0;
 }
 
 .unlocked .mst-badge-icon {
-  background: color-mix(in srgb, var(--color-primary, #31cfa1) 18%, transparent);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary, #31cfa1) 25%, transparent);
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
 }
 
 .mst-badge-info {
@@ -1535,143 +1750,187 @@ const CSS = `
   flex: 1;
 }
 
+.mst-badge-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .mst-badge-title {
-  font-size: 13.5px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-text-main);
 }
 
 .mst-badge-desc {
   font-size: 11px;
   font-weight: 500;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
-  line-height: 1.3;
+  color: var(--color-text-secondary);
+  line-height: 1.35;
 }
 
 .mst-badge-status {
   font-size: 10.5px;
-  font-weight: 750;
-  margin-top: 2px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
 }
 
 .unlocked .mst-badge-status {
-  color: var(--color-primary, #31cfa1);
+  color: var(--color-primary-text);
 }
 
 .locked .mst-badge-status {
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+  color: var(--color-text-secondary);
 }
 
-/* Top 歌手横向排行 */
+.mst-badge-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.mst-badge-progress-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--control-track-bg);
+  overflow: hidden;
+}
+
+.mst-badge-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+  transition: width 0.35s ease;
+}
+
+.mst-badge-progress-text {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Top 歌手横向排行（支持点击下钻抽屉） */
 .mst-bars {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
 }
 
 .mst-bar-row {
   display: grid;
-  grid-template-columns: 24px 100px 1fr 76px;
+  grid-template-columns: 24px 104px 1fr 76px 18px;
   align-items: center;
-  gap: 12px;
-  padding: 6px 8px;
-  border-radius: 10px;
-  transition: background 0.15s ease;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-item, 6px);
+  transition: background-color 0.14s ease;
+}
+
+.mst-bar-row.is-clickable {
+  cursor: pointer;
 }
 
 .mst-bar-row.no-rank {
-  grid-template-columns: 110px 1fr 76px;
+  grid-template-columns: 110px 1fr 82px;
 }
 
 .mst-bar-row:hover {
-  background: var(--control-hover-bg, rgba(148, 163, 184, 0.08));
+  background: var(--row-hover-bg);
+}
+
+.mst-bar-chevron {
+  color: var(--icon-secondary, var(--color-text-secondary));
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.mst-bar-row.is-clickable:hover .mst-bar-chevron {
+  opacity: 1;
+  transform: translateX(2px);
 }
 
 .mst-bar-rank {
   font-size: 12px;
-  font-weight: 850;
+  font-weight: 700;
   text-align: center;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .mst-rank-1 {
-  color: #f59e0b;
-  font-weight: 900;
+  color: var(--color-primary-text);
+  font-weight: 800;
 }
+
 .mst-rank-2 {
-  color: #94a3b8;
-  font-weight: 900;
+  color: var(--color-text-main);
+  font-weight: 800;
 }
+
 .mst-rank-3 {
-  color: #d97706;
-  font-weight: 900;
+  color: var(--color-text-secondary);
+  font-weight: 800;
 }
 
 .mst-bar-name {
   font-size: 13px;
-  font-weight: 750;
-  color: var(--color-text-main, #f8fafc);
+  font-weight: 600;
+  color: var(--color-text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .mst-bar-track {
-  height: 8px;
+  height: 7px;
   border-radius: 999px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.12));
+  background: var(--control-track-bg);
   overflow: hidden;
 }
 
 .mst-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--color-primary, #31cfa1), #38bdf8);
+  background: var(--color-primary);
   transition: width 0.35s ease;
 }
 
 .mst-bar-val {
   font-size: 11.5px;
-  font-weight: 750;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 600;
+  color: var(--color-text-secondary);
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-/* Top 歌曲列表 */
-.mst-tabs {
+/* Top 歌曲列表（对齐 EchoMusic SongList：无边框、双击播放、显式矢量播放与下载图标） */
+.mst-song-tabs-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--control-muted-bg, rgba(148, 163, 184, 0.08));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 10px;
 }
 
-.mst-tab-btn {
-  background: transparent;
-  border: none;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
-  border-radius: 8px;
-  padding: 5px 12px;
-  font-size: 11.5px;
+.mst-song-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 34px;
+}
+
+.mst-song-tabs-list .tab-trigger {
+  font-size: 13px;
   font-weight: 700;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-}
-
-.mst-tab-btn:hover {
-  color: var(--color-text-main, #f8fafc);
-}
-
-.mst-tab-btn.active {
-  background: var(--color-bg-elevated, #fff);
-  color: var(--color-primary, #31cfa1);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
 .mst-songs-scroll {
@@ -1689,13 +1948,12 @@ const CSS = `
 }
 
 .mst-songs-scroll::-webkit-scrollbar-thumb {
-  background: var(--border-subtle, rgba(148, 163, 184, 0.22));
+  background: var(--scrollbar-thumb-bg);
   border-radius: 999px;
-  transition: background 0.15s ease;
 }
 
 .mst-songs-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--color-primary, #31cfa1);
+  background: var(--scrollbar-thumb-bg-hover);
 }
 
 .mst-songs {
@@ -1707,24 +1965,30 @@ const CSS = `
 .mst-song-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 8px 10px;
-  border-radius: 10px;
-  transition: background 0.15s ease;
-  position: relative;
+  border-radius: var(--radius-item, 6px);
+  background: transparent;
+  transition: background-color 0.14s ease;
+  user-select: none;
 }
 
 .mst-song-row:hover {
-  background: var(--control-hover-bg, rgba(148, 163, 184, 0.1));
+  background: var(--row-hover-bg);
+}
+
+.mst-song-row.is-active {
+  background: var(--row-selected-bg);
 }
 
 .mst-song-rank {
   width: 24px;
   flex-shrink: 0;
   font-size: 12px;
-  font-weight: 850;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+  font-weight: 700;
+  color: var(--color-text-secondary);
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .mst-song-main {
@@ -1737,22 +2001,23 @@ const CSS = `
 
 .mst-song-title {
   font-size: 13px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
+  font-weight: 600;
+  color: var(--color-text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: color 0.15s;
+  transition: color 0.14s ease;
 }
 
-.mst-song-row:hover .mst-song-title {
-  color: var(--color-primary, #31cfa1);
+.mst-song-row.is-active .mst-song-title {
+  color: var(--color-primary-text);
+  font-weight: 700;
 }
 
 .mst-song-artist {
   font-size: 11.5px;
-  font-weight: 600;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.7));
+  font-weight: 500;
+  color: var(--color-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1762,31 +2027,56 @@ const CSS = `
   flex-shrink: 0;
   text-align: right;
   font-size: 11.5px;
-  font-weight: 750;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 600;
+  color: var(--color-text-secondary);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.mst-song-play-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--color-primary, #31cfa1);
-  color: var(--color-on-primary, #0f172a);
-  display: flex;
+.mst-song-actions {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transform: scale(0.85);
-  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
-  margin-left: 4px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
-.mst-song-row:hover .mst-song-play-icon {
+.mst-row-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-control, 6px);
+  border: none;
+  background: transparent;
+  color: var(--icon-main, var(--color-text-secondary));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s ease, background-color 0.14s ease, color 0.14s ease;
+}
+
+.mst-song-row:hover .mst-row-icon-btn,
+.mst-song-row:focus-within .mst-row-icon-btn,
+.mst-song-row.is-active .mst-row-icon-btn,
+.mst-drawer-row:hover .mst-row-icon-btn,
+.mst-drawer-row:focus-within .mst-row-icon-btn {
   opacity: 1;
-  transform: scale(1);
+}
+
+.mst-row-icon-btn:hover {
+  background: var(--control-hover-bg);
+  color: var(--color-text-main);
+}
+
+.mst-row-icon-btn.is-play:hover,
+.mst-song-row.is-active .mst-row-icon-btn.is-play {
+  color: var(--color-primary-text);
+  background: var(--control-active-bg);
+}
+
+.mst-row-icon-btn.is-danger:hover {
+  color: var(--control-danger-text, var(--state-danger, #ef4444));
+  background: var(--control-danger-bg);
 }
 
 /* 音源 donut + 图例 */
@@ -1795,13 +2085,13 @@ const CSS = `
   align-items: center;
   gap: 24px;
   flex-wrap: wrap;
-  padding: 6px 0 14px;
+  padding: 4px 0 12px;
 }
 
 .mst-legend {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   flex: 1;
   min-width: 180px;
 }
@@ -1811,12 +2101,12 @@ const CSS = `
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border-radius: 8px;
-  transition: background 0.12s;
+  border-radius: var(--radius-item, 6px);
+  transition: background-color 0.12s ease;
 }
 
 .mst-legend-item:hover {
-  background: var(--control-hover-bg, rgba(148, 163, 184, 0.08));
+  background: var(--row-hover-bg);
 }
 
 .mst-legend-dot {
@@ -1830,8 +2120,8 @@ const CSS = `
   flex: 1;
   min-width: 0;
   font-size: 12.5px;
-  font-weight: 700;
-  color: var(--color-text-main, #f8fafc);
+  font-weight: 600;
+  color: var(--color-text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1839,10 +2129,93 @@ const CSS = `
 
 .mst-legend-val {
   font-size: 11.5px;
-  font-weight: 750;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.85));
+  font-weight: 600;
+  color: var(--color-text-secondary);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* 侧滑抽屉内容区 */
+.mst-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mst-drawer-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  margin: 0 0 8px;
+}
+
+.mst-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mst-drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-item, 6px);
+  transition: background-color 0.14s ease;
+}
+
+.mst-drawer-row:hover {
+  background: var(--row-hover-bg);
+}
+
+.mst-drawer-time {
+  width: 40px;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mst-drawer-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--control-muted-bg);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.mst-drawer-tag.is-completed {
+  background: var(--control-active-bg);
+  color: var(--color-primary-text);
+}
+
+.mst-drawer-tag.is-skipped {
+  background: var(--control-danger-bg);
+  color: var(--control-danger-text, var(--state-danger, #ef4444));
+}
+
+.mst-artist-months {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-card, 10px);
+  background: var(--content-panel-bg);
+}
+
+.mst-artist-month-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 92px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
 }
 
 /* 空态 / 加载 / 错误 */
@@ -1851,24 +2224,30 @@ const CSS = `
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 72px 24px;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.9));
+  gap: 12px;
+  padding: 64px 24px;
+  color: var(--color-text-secondary);
   text-align: center;
 }
 
 .mst-state p {
   margin: 0;
-  font-size: 13.5px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-/* 设置面板 */
+/* 设置面板（无边框轻底色分组，与 EchoMusic 原生设置页一致） */
 .mst-settings {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   max-width: 780px;
+}
+
+.mst-settings-group {
+  border-radius: var(--radius-card, 10px);
+  background: var(--content-panel-bg);
+  overflow: hidden;
 }
 
 .mst-setting-row {
@@ -1876,33 +2255,35 @@ const CSS = `
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 18px;
-  border-radius: 14px;
-  background: var(--color-bg-elevated, rgba(148, 163, 184, 0.05));
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
+  padding: 13px 16px;
+}
+
+.mst-setting-row + .mst-setting-row {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .mst-setting-copy {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 
 .mst-setting-label {
   font-size: 13.5px;
-  font-weight: 800;
-  color: var(--color-text-main, #f8fafc);
+  font-weight: 700;
+  color: var(--color-text-main);
 }
 
 .mst-setting-hint {
   font-size: 11.5px;
   font-weight: 500;
-  color: var(--color-text-secondary, rgba(148, 163, 184, 0.8));
+  color: var(--color-text-secondary);
 }
 
 .mst-setting-select {
   width: 132px;
+  flex-shrink: 0;
 }
 
 .mst-backup-actions {
@@ -1912,11 +2293,109 @@ const CSS = `
   flex-wrap: wrap;
 }
 
-.mst-danger-zone {
-  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, #ef4444 6%, transparent);
-  padding: 16px 18px;
+.mst-scrobbler-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 15px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.mst-field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.mst-field-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.mst-scrobbler-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.mst-danger-group {
+  border-radius: var(--radius-card, 10px);
+  background: var(--control-danger-bg);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* 清空数据 Dialog 选项 */
+.mst-clear-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.mst-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-item, 6px);
+  background: var(--control-muted-bg);
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+
+.mst-radio-card:hover {
+  background: var(--control-hover-bg);
+}
+
+.mst-radio-card.is-selected {
+  background: var(--control-active-bg);
+}
+
+.mst-radio-card.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mst-radio-dot {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--control-checkbox-border, var(--border-strong));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mst-radio-card.is-selected .mst-radio-dot {
+  border-color: var(--color-primary);
+}
+
+.mst-radio-dot-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+
+.mst-backup-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 2px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-main);
+  cursor: pointer;
+  user-select: none;
 }
 
 /* 动效 */
@@ -1924,10 +2403,12 @@ const CSS = `
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
 @keyframes mstSpin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
 .mst-spin {
   animation: mstSpin 0.9s linear infinite;
 }
@@ -1940,7 +2421,7 @@ const chartGrid = 'var(--border-subtle, rgba(148, 163, 184, 0.16))';
 const chartText = 'var(--color-text-secondary, rgba(148, 163, 184, 0.9))';
 const chartMuted = 'var(--control-muted-bg, rgba(148, 163, 184, 0.1))';
 
-// 折线（趋势）：单序列、主题色、recessive 网格、首尾直接标注
+// 折线（趋势）：单序列、主题色、柔和网格、首尾标注
 const renderTrendChart = (h, rows) => {
   const W = 720;
   const H = 220;
@@ -1975,7 +2456,10 @@ const renderTrendChart = (h, rows) => {
       ? [{ x: xAt(0), label: String(rows[0]?.bucket ?? '') }]
       : [
           { x: xAt(0), label: String(rows[0]?.bucket ?? '') },
-          { x: xAt(Math.floor((n - 1) / 2)), label: String(rows[Math.floor((n - 1) / 2)]?.bucket ?? '') },
+          {
+            x: xAt(Math.floor((n - 1) / 2)),
+            label: String(rows[Math.floor((n - 1) / 2)]?.bucket ?? ''),
+          },
           { x: xAt(n - 1), label: String(rows[n - 1]?.bucket ?? '') },
         ];
 
@@ -1983,20 +2467,40 @@ const renderTrendChart = (h, rows) => {
   return h('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': '听歌时长趋势' }, [
     h('defs', null, [
       h('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' }, [
-        h('stop', { offset: '0%', 'stop-color': 'var(--color-primary, #31cfa1)', 'stop-opacity': '0.32' }),
+        h('stop', { offset: '0%', 'stop-color': 'var(--color-primary, #31cfa1)', 'stop-opacity': '0.28' }),
         h('stop', { offset: '100%', 'stop-color': 'var(--color-primary, #31cfa1)', 'stop-opacity': '0' }),
       ]),
     ]),
-    ...gridTicks.map((t) => [
-      h('line', { x1: PAD_L, x2: W - PAD_R, y1: t.y, y2: t.y, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.5, style: { stroke: chartGrid } }),
-      h('text', { x: PAD_L - 8, y: t.y + 4, 'font-size': 10.5, 'text-anchor': 'end', style: { fill: chartText } }, t.label),
-    ]).flat(),
-    areaPath
-      ? h('path', { d: areaPath, stroke: 'none', fill: `url(#${gradId})` })
-      : null,
-    h('path', { d: linePath, fill: 'none', 'stroke-width': 2.5, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', style: { stroke: chartStroke } }),
+    ...gridTicks
+      .map((t) => [
+        h('line', {
+          x1: PAD_L,
+          x2: W - PAD_R,
+          y1: t.y,
+          y2: t.y,
+          'stroke-width': 1,
+          'stroke-dasharray': '3 3',
+          opacity: 0.65,
+          style: { stroke: chartGrid },
+        }),
+        h(
+          'text',
+          { x: PAD_L - 8, y: t.y + 4, 'font-size': 10.5, 'text-anchor': 'end', style: { fill: chartText } },
+          t.label,
+        ),
+      ])
+      .flat(),
+    areaPath ? h('path', { d: areaPath, stroke: 'none', fill: `url(#${gradId})` }) : null,
+    h('path', {
+      d: linePath,
+      fill: 'none',
+      'stroke-width': 2.4,
+      'stroke-linejoin': 'round',
+      'stroke-linecap': 'round',
+      style: { stroke: chartStroke },
+    }),
     ...pts.map((p, i) =>
-      h('circle', { cx: p.x, cy: p.y, r: 3.5, style: { fill: chartStroke, cursor: 'pointer' } }, [
+      h('circle', { cx: p.x, cy: p.y, r: 3.4, style: { fill: chartStroke, cursor: 'pointer' } }, [
         h('title', null, `${rows[i]?.bucket}: ${formatMsShort(Number(rows[i]?.ms) || 0)}`),
       ]),
     ),
@@ -2028,18 +2532,20 @@ const renderHourChart = (h, rows) => {
     const x = PAD_L + hour * slot + (slot - barW) / 2;
     const isPeak = val === maxPlays && val > 0;
     bars.push(
-      h('rect', {
-        x: x.toFixed(1),
-        y: (PAD_T + innerH - hgt).toFixed(1),
-        width: barW.toFixed(1),
-        height: hgt.toFixed(1),
-        rx: 3,
-        ry: 3,
-        opacity: isPeak ? 1 : val > 0 ? 0.8 : 0.15,
-        style: { fill: chartStroke, cursor: 'pointer' },
-      }, [
-        h('title', null, `${hour}:00 - ${hour}:59: ${val} 次播放`),
-      ]),
+      h(
+        'rect',
+        {
+          x: x.toFixed(1),
+          y: (PAD_T + innerH - hgt).toFixed(1),
+          width: barW.toFixed(1),
+          height: hgt.toFixed(1),
+          rx: 3,
+          ry: 3,
+          opacity: isPeak ? 1 : val > 0 ? 0.78 : 0.15,
+          style: { fill: chartStroke, cursor: 'pointer' },
+        },
+        [h('title', null, `${hour}:00 - ${hour}:59: ${val} 次播放`)],
+      ),
     );
   }
 
@@ -2049,15 +2555,24 @@ const renderHourChart = (h, rows) => {
   }));
 
   return h('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': '每日时段分布' }, [
-    h('line', { x1: PAD_L, x2: W - PAD_R, y1: PAD_T + innerH, y2: PAD_T + innerH, 'stroke-width': 1, style: { stroke: chartGrid, opacity: 0.6 } }),
+    h('line', {
+      x1: PAD_L,
+      x2: W - PAD_R,
+      y1: PAD_T + innerH,
+      y2: PAD_T + innerH,
+      'stroke-width': 1,
+      style: { stroke: chartGrid },
+    }),
     ...bars,
-    ...ticks.map((t) => h('text', { x: t.x, y: H - 8, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, t.label)),
+    ...ticks.map((t) =>
+      h('text', { x: t.x, y: H - 8, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, t.label),
+    ),
   ]);
 };
 
 // 音源 donut：stroke-dasharray 分段 + 中心总数 + 图例
 const renderDonut = (h, segments, total) => {
-  const size = 160;
+  const size = 156;
   const c = size / 2;
   const r = 50;
   const circumference = 2 * Math.PI * r;
@@ -2071,27 +2586,38 @@ const renderDonut = (h, segments, total) => {
   });
 
   return h('svg', { viewBox: `0 0 ${size} ${size}`, width: size, height: size, role: 'img', 'aria-label': '音源分布' }, [
-    h('circle', { cx: c, cy: c, r, fill: 'none', 'stroke-width': 22, style: { stroke: chartMuted } }),
+    h('circle', { cx: c, cy: c, r, fill: 'none', 'stroke-width': 20, style: { stroke: chartMuted } }),
     ...arcs.map((arc) =>
       h('circle', {
         cx: c,
         cy: c,
         r,
         fill: 'none',
-        'stroke-width': 22,
+        'stroke-width': 20,
         'stroke-dasharray': `${arc.len.toFixed(2)} ${(circumference - arc.len).toFixed(2)}`,
         'stroke-dashoffset': (-arc.offset).toFixed(2),
         transform: `rotate(-90 ${c} ${c})`,
         style: { stroke: sourceColor(arc.label) },
       }),
     ),
-    h('text', { x: c, y: c - 2, 'font-size': 22, 'font-weight': 850, 'text-anchor': 'middle', style: { fill: 'var(--color-text-main, #f8fafc)' } }, String(total)),
+    h(
+      'text',
+      {
+        x: c,
+        y: c - 2,
+        'font-size': 21,
+        'font-weight': 800,
+        'text-anchor': 'middle',
+        style: { fill: 'var(--color-text-main)' },
+      },
+      String(total),
+    ),
     h('text', { x: c, y: c + 16, 'font-size': 10.5, 'text-anchor': 'middle', style: { fill: chartText } }, '总播放次数'),
   ]);
 };
 
-// 365天听歌热力图（GitHub 矩阵风，52列 x 7行）
-const renderHeatmapChart = (h, rows, hoveredDay) => {
+// 365天听歌热力图（GitHub 矩阵风，支持点击单元格打开当日流水抽屉）
+const renderHeatmapChart = (h, rows, hoveredDay, onSelectDay) => {
   const byDay = new Map(rows.map((r) => [String(r.day), { plays: Number(r.plays) || 0, ms: Number(r.ms) || 0 }]));
   const today = new Date();
   const days = [];
@@ -2178,6 +2704,7 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
     const dayStr = formatDay(d);
     const stat = byDay.get(dayStr) || { plays: 0, ms: 0 };
     const plays = stat.plays;
+    const weekday = weekDayNames[d.getDay()];
 
     if (row === 0 && d.getMonth() !== lastMonth && col < weeks - 1) {
       lastMonth = d.getMonth();
@@ -2195,11 +2722,13 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
       );
     }
 
-    let fillColor = 'rgba(148, 163, 184, 0.08)';
+    let fillColor = 'var(--control-muted-bg)';
     if (plays >= 12) fillColor = 'var(--color-primary, #31cfa1)';
     else if (plays >= 6) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent)';
     else if (plays >= 3) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent)';
     else if (plays >= 1) fillColor = 'color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent)';
+
+    const dayInfo = { day: dayStr, plays, ms: stat.ms, weekday };
 
     rects.push(
       h(
@@ -2214,22 +2743,16 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
           ry: 3,
           style: { fill: fillColor, cursor: 'pointer' },
           onMouseenter: () => {
-            if (hoveredDay) {
-              hoveredDay.value = {
-                day: dayStr,
-                plays,
-                ms: stat.ms,
-                weekday: weekDayNames[d.getDay()],
-              };
-            }
+            if (hoveredDay) hoveredDay.value = dayInfo;
           },
           onMouseleave: () => {
             if (hoveredDay) hoveredDay.value = null;
           },
+          onClick: () => {
+            if (typeof onSelectDay === 'function') onSelectDay(dayInfo);
+          },
         },
-        [
-          h('title', null, `${dayStr} (${weekDayNames[d.getDay()]})：${plays} 次播放 · ${formatMsShort(stat.ms)}`),
-        ],
+        [h('title', null, `${dayStr} (${weekday})：${plays} 次播放 · ${formatMsShort(stat.ms)}（点击查看当日流水）`)],
       ),
     );
   });
@@ -2257,23 +2780,28 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
   return h('div', null, [
     h('div', { class: 'mst-heatmap-stats' }, [
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.calendar, { size: 12 }), h('span', null, '累计活跃：')]),
+        iconSvg(h, MST_ICONS.calendar, { size: 12 }),
+        h('span', null, '累计活跃：'),
         h('strong', null, `${activeDays} / 365 天 (${activeRate}%)`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.flame, { size: 12 }), h('span', null, '当前连续：')]),
+        iconSvg(h, MST_ICONS.flame, { size: 12 }),
+        h('span', null, '当前连续：'),
         h('strong', null, `${currentStreak} 天`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.zap, { size: 12 }), h('span', null, '最长连胜：')]),
+        iconSvg(h, MST_ICONS.zap, { size: 12 }),
+        h('span', null, '最长连胜：'),
         h('strong', null, `${maxStreak} 天`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.music, { size: 12 }), h('span', null, '年度总播放：')]),
+        iconSvg(h, MST_ICONS.music, { size: 12 }),
+        h('span', null, '年度总播放：'),
         h('strong', null, `${totalYearPlays} 次`),
       ]),
       h('div', { class: 'mst-stat-tag' }, [
-        h('span', { style: 'display: flex; align-items: center; gap: 4px;' }, [iconSvg(h, MST_ICONS.clock, { size: 12 }), h('span', null, '累计实听：')]),
+        iconSvg(h, MST_ICONS.clock, { size: 12 }),
+        h('span', null, '累计实听：'),
         h('strong', null, formatMsShort(totalYearMs)),
       ]),
     ]),
@@ -2299,28 +2827,27 @@ const renderHeatmapChart = (h, rows, hoveredDay) => {
                 'span',
                 null,
                 curInspect.plays > 0
-                  ? `播放 ${curInspect.plays} 次 · 实听 ${formatMsShort(curInspect.ms)} · ${
-                      curInspect.plays >= 12
-                        ? '极高活跃'
-                        : curInspect.plays >= 6
-                        ? '高频聆听'
-                        : curInspect.plays >= 3
-                        ? '适度品味'
-                        : '轻松浅听'
-                    }`
-                  : '当日暂无听歌记录',
+                  ? `播放 ${curInspect.plays} 次 · 实听 ${formatMsShort(curInspect.ms)} · 点击查看当日流水`
+                  : '当日暂无听歌记录 · 点击可查看详情',
               ),
             ]
-          : [
-              h('span', { style: 'opacity: 0.8;' }, '过去 365 天听歌足迹矩阵 · 鼠标悬停任意色块可实时检视当日收听明细'),
-            ],
+          : [h('span', null, '过去 365 天听歌足迹矩阵 · 点击任意日期色块可查看并清理当日播放流水')],
       ]),
       h('div', { class: 'mst-heatmap-legend' }, [
         h('span', null, '少'),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: rgba(148, 163, 184, 0.08);' }),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent);' }),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent);' }),
-        h('span', { class: 'mst-heatmap-legend-box', style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent);' }),
+        h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--control-muted-bg);' }),
+        h('span', {
+          class: 'mst-heatmap-legend-box',
+          style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 24%, transparent);',
+        }),
+        h('span', {
+          class: 'mst-heatmap-legend-box',
+          style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 50%, transparent);',
+        }),
+        h('span', {
+          class: 'mst-heatmap-legend-box',
+          style: 'background: color-mix(in srgb, var(--color-primary, #31cfa1) 76%, transparent);',
+        }),
         h('span', { class: 'mst-heatmap-legend-box', style: 'background: var(--color-primary, #31cfa1);' }),
         h('span', null, '多'),
       ]),
@@ -2356,30 +2883,23 @@ const renderCircadianClock = (h, rows) => {
     ...periods.map((p) => {
       const pct = Math.round((p.plays / total) * 100);
       const isPeak = p.plays === maxPlays && p.plays > 0;
-      return h(
-        'div',
-        { class: ['mst-circadian-card', p.cls, isPeak ? 'mst-peak' : ''] },
-        [
-          h('div', { class: 'mst-circadian-head' }, [
-            h('span', { class: 'mst-circadian-name' }, [
-              iconSvg(h, p.icon, { size: 14 }),
-              h('span', null, p.name),
-            ]),
-            isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '峰值活跃') : null,
-          ]),
-          h('div', { class: 'mst-circadian-time' }, p.time),
-          h('div', { class: 'mst-circadian-percent' }, `${pct}%`),
-          h('div', { class: 'mst-circadian-bar-bg' }, [
-            h('div', { class: 'mst-circadian-bar-fill', style: { width: `${pct}%` } }),
-          ]),
-          h('div', { class: 'mst-circadian-plays' }, `${p.plays} 次播放`),
-        ],
-      );
+      return h('div', { class: ['mst-circadian-card', p.cls, isPeak ? 'mst-peak' : ''], key: p.id }, [
+        h('div', { class: 'mst-circadian-head' }, [
+          h('span', { class: 'mst-circadian-name' }, [iconSvg(h, p.icon, { size: 14 }), h('span', null, p.name)]),
+          isPeak ? h('span', { class: 'mst-circadian-peak-badge' }, '峰值活跃') : null,
+        ]),
+        h('div', { class: 'mst-circadian-time' }, p.time),
+        h('div', { class: 'mst-circadian-percent' }, `${pct}%`),
+        h('div', { class: 'mst-circadian-bar-bg' }, [
+          h('div', { class: 'mst-circadian-bar-fill', style: { width: `${pct}%` } }),
+        ]),
+        h('div', { class: 'mst-circadian-plays' }, `${p.plays} 次播放`),
+      ]);
     }),
   ]);
 };
 
-// 听歌画像个性成就徽章
+// 听歌画像个性成就徽章（未解锁徽章展示明确进度条与数值）
 const renderBadges = (h, data) => {
   const totalPlays = Number(data?.kpi?.n || 0);
   const totalMs = Number(data?.kpi?.ms || 0);
@@ -2407,7 +2927,7 @@ const renderBadges = (h, data) => {
   const sumH = (s, e) => {
     let cnt = 0;
     for (let i = s; i <= e; i++) {
-      const row = hours.find((h) => Number(h.hour) === i);
+      const row = hours.find((item) => Number(item.hour) === i);
       if (row) cnt += Number(row.plays || 0);
     }
     return cnt;
@@ -2416,55 +2936,71 @@ const renderBadges = (h, data) => {
   const wPlays = sumH(11, 17);
   const dPlays = sumH(18, 21);
   const nPlays = sumH(22, 23) + sumH(0, 5);
-  const allSeason =
-    totalPlays >= 15 &&
-    mPlays / totalPlays >= 0.05 &&
-    wPlays / totalPlays >= 0.05 &&
-    dPlays / totalPlays >= 0.05 &&
-    nPlays / totalPlays >= 0.05;
+  const periodPassCount =
+    totalPlays > 0
+      ? [mPlays, wPlays, dPlays, nPlays].filter((cnt) => cnt / totalPlays >= 0.05).length
+      : 0;
+  const allSeason = totalPlays >= 15 && periodPassCount === 4;
+
+  const loopCount = Number(loopSong?.daily_plays || 0);
+  const totalHours = totalMs / 3600000;
+
+  const clampPct = (v) => Math.max(0, Math.min(100, Math.round(v)));
 
   const badges = [
     {
       id: 'night',
       icon: MST_ICONS.moon,
       title: '深夜哲学家',
-      desc: '凌晨 0-6 点听歌占比 > 20%',
+      desc: '凌晨 0–6 点听歌占比 ≥ 20% 且 ≥ 5 次',
       unlocked: nightRate >= 0.2 && nightPlays >= 5,
+      progressPct: clampPct(Math.min(nightRate / 0.2, nightPlays / 5) * 100),
+      progressLabel: `深夜 ${Math.round(nightRate * 100)}% / 20%（${nightPlays} / 5 次）`,
     },
     {
       id: 'lossless',
       icon: MST_ICONS.headphones,
       title: '无损发烧友',
-      desc: 'SQ / Hi-Res / 杜比全景声占比 > 40%',
+      desc: 'SQ / Hi-Res / 杜比全景声占比 ≥ 40% 且 ≥ 5 次',
       unlocked: hiresRate >= 0.4 && hiresPlays >= 5,
+      progressPct: clampPct(Math.min(hiresRate / 0.4, hiresPlays / 5) * 100),
+      progressLabel: `无损 ${Math.round(hiresRate * 100)}% / 40%（${hiresPlays} / 5 次）`,
     },
     {
       id: 'loop',
       icon: MST_ICONS.repeat,
       title: '专一单曲狂人',
-      desc: '单曲单日循环播放 >= 5 次',
-      unlocked: Boolean(loopSong && Number(loopSong.daily_plays) >= 5),
+      desc: '单曲单日循环播放 ≥ 5 次',
+      unlocked: loopCount >= 5,
+      progressPct: clampPct((loopCount / 5) * 100),
+      progressLabel: `${Math.min(loopCount, 5)} / 5 次单日循环`,
     },
     {
       id: 'diverse',
       icon: MST_ICONS.globe,
       title: '百家争鸣',
-      desc: '收听去重歌手 >= 20 位',
+      desc: '收听去重歌手 ≥ 20 位',
       unlocked: artistsCount >= 20,
+      progressPct: clampPct((artistsCount / 20) * 100),
+      progressLabel: `${Math.min(artistsCount, 20)} / 20 位歌手`,
     },
     {
       id: 'marathon',
       icon: MST_ICONS.activity,
       title: '音乐马拉松',
-      desc: '累计实听时长 >= 30 小时',
-      unlocked: totalMs >= 30 * 3600 * 1000,
+      desc: '累计实听时长 ≥ 30 小时',
+      unlocked: totalHours >= 30,
+      progressPct: clampPct((totalHours / 30) * 100),
+      progressLabel: `${totalHours.toFixed(1)} / 30 小时`,
     },
     {
       id: 'all_day',
       icon: MST_ICONS.compass,
       title: '全天候候鸟',
-      desc: '晨、昼、暮、夜皆有音乐相伴',
+      desc: '晨、昼、暮、夜四时段占比均 ≥ 5%（累计 ≥ 15 次）',
       unlocked: allSeason,
+      progressPct: clampPct(Math.min(periodPassCount / 4, totalPlays / 15) * 100),
+      progressLabel: `${periodPassCount} / 4 个时段达标 · ${Math.min(totalPlays, 15)} / 15 次`,
     },
   ];
 
@@ -2473,20 +3009,32 @@ const renderBadges = (h, data) => {
       h('div', { class: ['mst-badge-card', b.unlocked ? 'unlocked' : 'locked'], key: b.id }, [
         h('div', { class: 'mst-badge-icon' }, [iconSvg(h, b.icon, { size: 18 })]),
         h('div', { class: 'mst-badge-info' }, [
-          h('div', { class: 'mst-badge-title' }, b.title),
+          h('div', { class: 'mst-badge-top' }, [
+            h('div', { class: 'mst-badge-title' }, b.title),
+            h(
+              'div',
+              { class: 'mst-badge-status' },
+              b.unlocked
+                ? [iconSvg(h, MST_ICONS.check, { size: 11 }), h('span', null, '已解锁')]
+                : [iconSvg(h, MST_ICONS.lock, { size: 10 }), h('span', null, `${b.progressPct}%`)],
+            ),
+          ]),
           h('div', { class: 'mst-badge-desc' }, b.desc),
-          h(
-            'div',
-            { class: 'mst-badge-status' },
-            b.unlocked ? h('span', { style: 'display: inline-flex; align-items: center; gap: 3px;' }, [iconSvg(h, MST_ICONS.check, { size: 11 }), h('span', null, '已解锁')]) : h('span', { style: 'display: inline-flex; align-items: center; gap: 3px; opacity: 0.6;' }, [iconSvg(h, MST_ICONS.lock, { size: 10 }), h('span', null, '未达成')]),
-          ),
+          !b.unlocked
+            ? h('div', { class: 'mst-badge-progress-wrap' }, [
+                h('div', { class: 'mst-badge-progress-track' }, [
+                  h('div', { class: 'mst-badge-progress-fill', style: { width: `${b.progressPct}%` } }),
+                ]),
+                h('div', { class: 'mst-badge-progress-text' }, b.progressLabel),
+              ])
+            : null,
         ]),
       ]),
     ),
   ]);
 };
 
-// 神曲循环狂热与深夜专属
+// 神曲循环狂热与深夜灵魂单曲（全矢量播放图标，已修复 SQL 缺失 track_id）
 const renderHighlights = (h, loopSong, nightSong, ctx) => {
   if (!loopSong && !nightSong) return null;
   return h('div', { class: 'mst-highlight-grid' }, [
@@ -2494,7 +3042,7 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
       ? h('div', { class: 'mst-highlight-card loop' }, [
           h('div', { class: 'mst-highlight-main' }, [
             h('div', { class: 'mst-highlight-tag' }, [
-              iconSvg(h, MST_ICONS.flame, { size: 12 }),
+              iconSvg(h, MST_ICONS.flame, { size: 13 }),
               h('span', null, '单日循环神曲'),
               h('span', { class: 'mst-highlight-pill' }, loopSong.day),
             ]),
@@ -2502,13 +3050,8 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
               'div',
               {
                 class: 'mst-highlight-title',
-                title: '点击播放此歌曲',
-                onClick: () => {
-                  if (loopSong.track_id) {
-                    if (ctx?.player?.playTrack) void ctx.player.playTrack(loopSong.track_id);
-                    else if (ctx?.player?.play) void ctx.player.play(loopSong.track_id);
-                  }
-                },
+                title: loopSong.track_id ? '点击播放此歌曲' : String(loopSong.title),
+                onClick: () => playTrackById(ctx, loopSong.track_id),
               },
               String(loopSong.title),
             ),
@@ -2522,14 +3065,13 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
             ? h(
                 'button',
                 {
+                  type: 'button',
                   class: 'mst-play-circle-btn',
                   title: '立即播放',
-                  onClick: () => {
-                    if (ctx?.player?.playTrack) void ctx.player.playTrack(loopSong.track_id);
-                    else if (ctx?.player?.play) void ctx.player.play(loopSong.track_id);
-                  },
+                  'aria-label': `播放 ${loopSong.title}`,
+                  onClick: () => playTrackById(ctx, loopSong.track_id),
                 },
-                [h('span', { style: 'font-size: 13px; margin-left: 2px;' }, '▶')],
+                [iconSvg(h, MST_ICONS.play, { size: 15 })],
               )
             : null,
         ])
@@ -2538,20 +3080,15 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
       ? h('div', { class: 'mst-highlight-card night' }, [
           h('div', { class: 'mst-highlight-main' }, [
             h('div', { class: 'mst-highlight-tag' }, [
-              iconSvg(h, MST_ICONS.moon, { size: 12 }),
+              iconSvg(h, MST_ICONS.moon, { size: 13 }),
               h('span', null, '深夜灵魂单曲 (00:00-06:00)'),
             ]),
             h(
               'div',
               {
                 class: 'mst-highlight-title',
-                title: '点击播放此歌曲',
-                onClick: () => {
-                  if (nightSong.track_id) {
-                    if (ctx?.player?.playTrack) void ctx.player.playTrack(nightSong.track_id);
-                    else if (ctx?.player?.play) void ctx.player.play(nightSong.track_id);
-                  }
-                },
+                title: nightSong.track_id ? '点击播放此歌曲' : String(nightSong.title),
+                onClick: () => playTrackById(ctx, nightSong.track_id),
               },
               String(nightSong.title),
             ),
@@ -2565,14 +3102,13 @@ const renderHighlights = (h, loopSong, nightSong, ctx) => {
             ? h(
                 'button',
                 {
+                  type: 'button',
                   class: 'mst-play-circle-btn',
                   title: '立即播放',
-                  onClick: () => {
-                    if (ctx?.player?.playTrack) void ctx.player.playTrack(nightSong.track_id);
-                    else if (ctx?.player?.play) void ctx.player.play(nightSong.track_id);
-                  },
+                  'aria-label': `播放 ${nightSong.title}`,
+                  onClick: () => playTrackById(ctx, nightSong.track_id),
                 },
-                [h('span', { style: 'font-size: 13px; margin-left: 2px;' }, '▶')],
+                [iconSvg(h, MST_ICONS.play, { size: 15 })],
               )
             : null,
         ])
@@ -2592,11 +3128,11 @@ const renderQualityAndEffects = (h, qualities, effects) => {
     viper_atmos: '杜比全景声',
   };
   const qualityColorMap = {
-    hires: '#f59e0b',
-    flac: '#06b6d4',
-    viper_atmos: '#a855f7',
-    '320k': '#10b981',
-    '128k': '#94a3b8',
+    hires: '#d97706',
+    flac: '#0891b2',
+    viper_atmos: '#7c3aed',
+    '320k': '#059669',
+    '128k': '#64748b',
   };
   const effectMap = {
     vinyl: '黑胶唱机',
@@ -2605,16 +3141,16 @@ const renderQualityAndEffects = (h, qualities, effects) => {
     bass: '超重低音',
   };
   const effectColorMap = {
-    vinyl: '#f43f5e',
-    pure_vocal: '#0ea5e9',
-    surround: '#8b5cf6',
-    bass: '#f59e0b',
+    vinyl: '#e11d48',
+    pure_vocal: '#0284c7',
+    surround: '#7c3aed',
+    bass: '#d97706',
   };
 
   return h('div', { class: 'mst-bars' }, [
     qualities.length > 0
       ? [
-          h('div', { class: 'mst-card-title', style: 'font-size: 13px; margin-top: 10px;' }, '音质分布画像'),
+          h('div', { class: 'mst-card-title', style: 'font-size: 12.5px; margin: 10px 0 4px;' }, '音质分布画像'),
           ...qualities.slice(0, 4).map((q) => {
             const plays = Number(q.plays || 0);
             const pct = totalQ > 0 ? Math.round((plays / totalQ) * 100) : 0;
@@ -2632,12 +3168,12 @@ const renderQualityAndEffects = (h, qualities, effects) => {
       : null,
     effects.length > 0
       ? [
-          h('div', { class: 'mst-card-title', style: 'font-size: 13px; margin-top: 14px;' }, '音效搭配偏好'),
+          h('div', { class: 'mst-card-title', style: 'font-size: 12.5px; margin: 12px 0 4px;' }, '音效搭配偏好'),
           ...effects.slice(0, 4).map((e) => {
             const plays = Number(e.plays || 0);
             const pct = totalE > 0 ? Math.round((plays / totalE) * 100) : 0;
             const label = effectMap[e.effect] || e.effect;
-            const barColor = effectColorMap[e.effect] || '#818cf8';
+            const barColor = effectColorMap[e.effect] || 'var(--color-primary, #31cfa1)';
             return h('div', { class: 'mst-bar-row no-rank', key: e.effect }, [
               h('span', { class: 'mst-bar-name', title: label }, label),
               h('div', { class: 'mst-bar-track' }, [
@@ -2651,447 +3187,17 @@ const renderQualityAndEffects = (h, qualities, effects) => {
   ]);
 };
 
-// ---- 报告页 ----
-
-const createReportPage = (ctx) => {
-  const { h, defineComponent, ref, watch, onMounted, resolveComponent, defineAsyncComponent } =
-    ctx.vue;
-  const PageScrollContainer = defineAsyncComponent(ctx.ui.components.PageScrollContainer);
-
-  const sectionTitle = (Icon, icon, title, sub, extra) =>
-    h('div', { class: 'mst-card-head' }, [
-      h('div', { class: 'mst-card-head-left' }, [
-        h('div', { class: 'mst-card-icon-pill' }, [
-          h(Icon, { icon, width: 16, height: 16 }),
-        ]),
-        h('div', null, [
-          h('h3', { class: 'mst-card-title' }, title),
-          sub ? h('p', { class: 'mst-card-sub' }, sub) : null,
-        ]),
-      ]),
-      extra || null,
-    ]);
-
-  return defineComponent({
-    name: 'music-stats-report',
-    setup() {
-      const Icon = resolveComponent('Icon');
-
-      const range = ref('month');
-      const accountScope = ref('current'); // 'current' | 'all'
-      const currentUser = ref(readCurrentUser(ctx));
-      const songTab = ref('top');
-      const customStart = ref('');
-      const customEnd = ref('');
-      const loading = ref(false);
-      const error = ref('');
-      const report = ref(null); // { kpi, topArtists, topSongs, trend, hours, sources }
-      const hoveredHeatmapDay = ref(null);
-
-      const load = async () => {
-        if (!db) {
-          error.value = '本地数据库未就绪';
-          return;
-        }
-        loading.value = true;
-        error.value = '';
-        currentUser.value = readCurrentUser(ctx);
-        try {
-          report.value = await queryReport(
-            db,
-            getRangeMs(range.value, customStart.value, customEnd.value),
-            trendGranularity(range.value),
-            {
-              userId: currentUser.value.userId,
-              scopeMode: accountScope.value,
-            },
-          );
-        } catch (err) {
-          console.warn('[music-stats] 查询报告失败:', err);
-          error.value = '读取统计失败，请稍后重试';
-        } finally {
-          loading.value = false;
-        }
-      };
-
-      onMounted(load);
-      watch(range, load);
-      watch(accountScope, load);
-      // 监听多账号切换（支持 EchoMusic v2.3.2+ 多账号会话隔离）
-      try {
-        const userStore = ctx.pinia?._s?.get("user");
-        if (userStore && typeof userStore.$subscribe === "function") {
-          let lastUid = String(userStore.info?.userid ?? userStore.info?.userId ?? "");
-          let lastRev = Number(userStore.accountRevision || 0);
-          userStore.$subscribe(() => {
-            const curUid = String(userStore.info?.userid ?? userStore.info?.userId ?? "");
-            const curRev = Number(userStore.accountRevision || 0);
-            if (curUid !== lastUid || curRev !== lastRev) {
-              lastUid = curUid;
-              lastRev = curRev;
-              currentUser.value = readCurrentUser(ctx);
-              void load();
-            }
-          });
-        }
-      } catch (err) {}
-
-
-      return () => {
-        const data = report.value;
-        const isEmpty = !data || !data.kpi || Number(data.kpi.n) === 0;
-        const isMonthly = range.value === 'year' || range.value === 'all';
-
-        // 年度报告派生
-        let annual = null;
-        if (data && !isEmpty && range.value === 'year') {
-          const kpi = data.kpi;
-          const topArtist = data.topArtists[0];
-          const topSong = data.topSongs[0];
-          const activeMonth = mostActiveMonth(data.trend);
-          annual = {
-            totalMs: Number(kpi.ms) || 0,
-            totalPlays: Number(kpi.n) || 0,
-            topArtist: topArtist ? String(topArtist.artist) : '',
-            topSong: topSong ? `${String(topSong.title)} · ${String(topSong.artist)}` : '',
-            activeMonth: activeMonth ? activeMonth.month : '',
-            avgPerDay: (Number(kpi.ms) || 0) / daysElapsedThisYear(),
-          };
-        }
-
-        // 音源 donut 数据
-        const sourceItems = data ? buildSourceSegments(data.sources) : { items: [], total: 0 };
-
-        return h('div', { class: 'mst-root' }, [
-          h(PageScrollContainer, null, {
-            default: () =>
-              h('div', { class: 'mst-page' }, [
-            // 页头
-            h('div', { class: 'mst-header' }, [
-              h('div', { class: 'mst-header-left' }, [
-                h('div', { class: 'mst-header-icon-box' }, [
-                  h(Icon, { icon: ctx.icons.iconPulse, width: 22, height: 22 }),
-                ]),
-                h('div', { class: 'mst-header-info' }, [
-                  h('div', { class: 'mst-title-row' }, [
-                    h('h1', { class: 'mst-title' }, '听歌数据画像'),
-                    h('span', { class: 'mst-privacy-badge' }, [
-                      h(Icon, { icon: ctx.icons.iconShield || ctx.icons.iconCheck, width: 12, height: 12 }),
-                      h('span', null, '纯本地存储 · 零隐私上传'),
-                    ]),
-                  ]),
-                  h('p', { class: 'mst-subtitle' }, '全方位回溯你的音乐足迹、聆听习惯与时空偏好'),
-                ]),
-              ]),
-              // 工具栏：账号范围切换 + 分段选择器 + 刷新按钮
-              h('div', { class: 'mst-toolbar' }, [
-                h('div', { class: 'mst-segmented', title: '切换当前登录账号或全部账号合并统计' }, [
-                  h(
-                    'button',
-                    {
-                      class: ['mst-seg-btn', accountScope.value === 'current' ? 'active' : ''],
-                      onClick: () => {
-                        accountScope.value = 'current';
-                      },
-                    },
-                    currentUser.value.nickname
-                      ? `当前 (${currentUser.value.nickname})`
-                      : currentUser.value.userId
-                        ? `当前 (${currentUser.value.userId})`
-                        : '当前账号',
-                  ),
-                  h(
-                    'button',
-                    {
-                      class: ['mst-seg-btn', accountScope.value === 'all' ? 'active' : ''],
-                      onClick: () => {
-                        accountScope.value = 'all';
-                      },
-                    },
-                    '全部账号',
-                  ),
-                ]),
-                h('div', { class: 'mst-segmented' }, [
-                  ...RANGE_OPTIONS.map((opt) =>
-                    h(
-                      'button',
-                      {
-                        key: opt.key,
-                        class: ['mst-seg-btn', range.value === opt.key ? 'active' : ''],
-                        onClick: () => {
-                          range.value = opt.key;
-                        },
-                      },
-                      opt.label,
-                    ),
-                  ),
-                ]),
-                h(
-                  'button',
-                  { class: 'mst-btn-action', onClick: load, title: '刷新统计数据' },
-                  [
-                    h(Icon, { icon: ctx.icons.iconRefreshCw, width: 13, height: 13, class: loading.value ? 'mst-spin' : '' }),
-                    '刷新',
-                  ],
-                ),
-              ]),
-            ]),
-
-            range.value === 'custom'
-              ? h('div', { class: 'mst-custom-range' }, [
-                  h('span', { class: 'mst-card-sub', style: 'margin: 0; font-weight: 700;' }, '自定义时间区间：'),
-                  h('input', {
-                    type: 'date',
-                    class: 'mst-date-input',
-                    value: customStart.value,
-                    onChange: (e) => {
-                      customStart.value = e.target.value;
-                    },
-                  }),
-                  h('span', { class: 'mst-card-sub', style: 'margin: 0;' }, '至'),
-                  h('input', {
-                    type: 'date',
-                    class: 'mst-date-input',
-                    value: customEnd.value,
-                    onChange: (e) => {
-                      customEnd.value = e.target.value;
-                    },
-                  }),
-                  h(
-                    'button',
-                    { class: 'mst-btn-action', style: 'padding: 5px 12px;', onClick: load },
-                    '应用筛选',
-                  ),
-                ])
-              : null,
-
-            loading.value && !data
-              ? h('div', { class: 'mst-card' }, [
-                  h('div', { class: 'mst-state' }, [
-                    h(Icon, { icon: ctx.icons.iconRefreshCw, width: 36, height: 36, class: 'mst-spin', style: 'color: var(--color-primary, #31cfa1);' }),
-                    h('p', null, '正在深入解析听歌数据…'),
-                  ]),
-                ])
-              : error.value && !data
-                ? h('div', { class: 'mst-card' }, [
-                    h('div', { class: 'mst-state' }, [
-                      h(Icon, { icon: ctx.icons.iconTriangleAlert || ctx.icons.iconInfo, width: 44, height: 44, style: 'color: #f43f5e;' }),
-                      h('p', null, error.value),
-                    ]),
-                  ])
-                : isEmpty
-                  ? h('div', { class: 'mst-card' }, [
-                      h('div', { class: 'mst-state' }, [
-                        h(Icon, { icon: ctx.icons.iconMusic, width: 56, height: 56, style: 'opacity: 0.5;' }),
-                        h('p', null, '所选时间区间内暂无听歌记录，放首歌静静聆听吧'),
-                      ]),
-                    ])
-                  : [
-                      // 年度报告（今年才显示）
-                      annual
-                        ? h('div', { class: 'mst-annual' }, [
-                            h('div', { class: 'mst-annual-head' }, [
-                              h('div', { class: 'mst-annual-head-left' }, [
-                                h(Icon, { icon: ctx.icons.iconSparkles || ctx.icons.iconStar, width: 22, height: 22 }),
-                                h('h2', { class: 'mst-annual-title' }, '年度音乐足迹报告'),
-                              ]),
-                              h('span', { class: 'mst-annual-badge' }, `${new Date().getFullYear()} 年度专属`),
-                            ]),
-                            h('div', { class: 'mst-annual-grid' }, [
-                              annualItem(h, '年度实听总时长', formatMsShort(annual.totalMs)),
-                              annualItem(h, '年度总播放次数', `${annual.totalPlays} 次`),
-                              annualItem(h, '年度最爱歌手', annual.topArtist || '—'),
-                              annualItem(h, '年度最爱单曲', annual.topSong || '—'),
-                              annualItem(h, '最活跃音乐月份', annual.activeMonth ? `${annual.activeMonth} 月` : '—'),
-                              annualItem(h, '日均听歌时长', formatMsShort(annual.avgPerDay)),
-                            ]),
-                          ])
-                        : null,
-
-                      // KPI 核心指标卡片
-                      (() => {
-                        const totalPlays = Number(data.kpi.n) || 0;
-                        const compCount = Number(data.kpi.completed_count) || 0;
-                        const skipCount = Number(data.kpi.skipped_count) || 0;
-                        const compPct = totalPlays > 0 ? Math.round((compCount / totalPlays) * 100) : 0;
-                        const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
-
-                        return h('div', { class: 'mst-kpis' }, [
-                          kpiCard(h, '累计听歌时长', formatMsShort(Number(data.kpi.ms) || 0), iconSvg(h, MST_ICONS.clock, { size: 14 }), '有效实听时长'),
-                          kpiCard(h, '累计播放次数', `${totalPlays} 次`, iconSvg(h, MST_ICONS.music, { size: 14 }), '达标计入次数'),
-                          kpiCard(h, '完播率', `${compPct}%`, iconSvg(h, MST_ICONS.headphones, { size: 14 }), `${compCount} 次完整听完`, compPct, false),
-                          kpiCard(h, '切歌跳过率', `${skipPct}%`, iconSvg(h, MST_ICONS.skip, { size: 14 }), `${skipCount} 次快速跳过`, skipPct, true),
-                          kpiCard(h, '去重曲目', `${Number(data.kpi.songs) || 0} 首`, iconSvg(h, MST_ICONS.music, { size: 14 }), '收听不同单曲'),
-                          kpiCard(h, '去重歌手', `${Number(data.kpi.artists) || 0} 位`, iconSvg(h, MST_ICONS.user, { size: 14 }), '探索音乐人谱系'),
-                        ]);
-                      })(),
-
-                      // 神曲循环与夜间专属
-                      renderHighlights(h, data.loopSong, data.nightSong, ctx),
-
-                      // 卡片区：趋势整行，其余两两并排
-                      h('div', { class: 'mst-grid' }, [
-                        // 365天听歌热力图（整行）
-                        data.heatmap && data.heatmap.length > 0
-                          ? h('div', { class: 'mst-card mst-full' }, [
-                              sectionTitle(
-                                Icon,
-                                ctx.icons.iconCalendar || ctx.icons.iconClock,
-                                '365天听歌足迹热力图',
-                                '全景回溯过去一年每一天的听歌频次与活跃深浅分布',
-                              ),
-                              renderHeatmapChart(h, data.heatmap, hoveredHeatmapDay),
-                            ])
-                          : null,
-
-                        // 24小时音乐生物钟（整行）
-                        h('div', { class: 'mst-card mst-full' }, [
-                          sectionTitle(
-                            Icon,
-                            ctx.icons.iconClock,
-                            '24小时音乐生物钟',
-                            '晨起、工作、黄昏、深夜四大时段的听歌节奏与活跃峰值',
-                          ),
-                          renderCircadianClock(h, data.hours),
-                        ]),
-
-                        // 听歌个性成就徽章（整行）
-                        h('div', { class: 'mst-card mst-full' }, [
-                          sectionTitle(
-                            Icon,
-                            ctx.icons.iconTrophy || ctx.icons.iconStar,
-                            '听歌画像成就徽章',
-                            '深度挖掘你的音乐习惯与行为数据，自动点亮专属个性勋章',
-                          ),
-                          renderBadges(h, data),
-                        ]),
-
-                        // 趋势（整行）
-                        data.trend.length > 0
-                          ? h('div', { class: 'mst-card mst-full' }, [
-                              sectionTitle(
-                                Icon,
-                                ctx.icons.iconPulse || ctx.icons.iconClock,
-                                '听歌时长趋势',
-                                isMonthly ? '按月份聚合统计实听时长' : '按日期聚合统计实听时长',
-                              ),
-                              h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
-                            ])
-                          : null,
-
-                        // Top 歌手
-                        data.topArtists.length > 0
-                          ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(
-                                Icon,
-                                ctx.icons.iconUsers || ctx.icons.iconTrophy,
-                                'Top 歌手排行',
-                                '按区间内累计有效实听时长降序',
-                              ),
-                              renderArtistBars(h, data.topArtists),
-                            ])
-                          : null,
-
-                        // Top 歌曲（支持 Tab 切换：Top 播放 / 耐听榜 / 常切榜）
-                        h('div', { class: 'mst-card' }, [
-                          sectionTitle(
-                            Icon,
-                            ctx.icons.iconMusic,
-                            '歌曲榜单与完播分析',
-                            songTab.value === 'top'
-                              ? '按播放次数降序（点击单曲可直接播放）'
-                              : songTab.value === 'completed'
-                              ? '最常听完的单曲榜（完播率 85% 以上）'
-                              : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
-                            h('div', { class: 'mst-segmented', style: 'padding: 2px;' }, [
-                              h(
-                                'button',
-                                {
-                                  class: ['mst-seg-btn', songTab.value === 'top' ? 'active' : ''],
-                                  style: 'padding: 3px 9px; font-size: 11px;',
-                                  onClick: () => { songTab.value = 'top'; },
-                                },
-                                `Top 播放 (${data.topSongs.length})`,
-                              ),
-                              h(
-                                'button',
-                                {
-                                  class: ['mst-seg-btn', songTab.value === 'completed' ? 'active' : ''],
-                                  style: 'padding: 3px 9px; font-size: 11px;',
-                                  onClick: () => { songTab.value = 'completed'; },
-                                },
-                                `最耐听 (${(data.completedSongs || []).length})`,
-                              ),
-                              h(
-                                'button',
-                                {
-                                  class: ['mst-seg-btn', songTab.value === 'skipped' ? 'active' : ''],
-                                  style: 'padding: 3px 9px; font-size: 11px;',
-                                  onClick: () => { songTab.value = 'skipped'; },
-                                },
-                                `常切 (${(data.skippedSongs || []).length})`,
-                              ),
-                            ]),
-                          ),
-                          renderSongList(
-                            h,
-                            songTab.value === 'top'
-                              ? data.topSongs
-                              : songTab.value === 'completed'
-                              ? data.completedSongs || []
-                              : data.skippedSongs || [],
-                            ctx,
-                          ),
-                        ]),
-
-                        // 时段分布
-                        h('div', { class: 'mst-card' }, [
-                          sectionTitle(
-                            Icon,
-                            ctx.icons.iconClock,
-                            '每日 24 时段分布',
-                            '按 0–23 点各时段历史播放次数统计分布',
-                          ),
-                          h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
-                        ]),
-
-                        // 音源占比与音质画像
-                        sourceItems.total > 0
-                          ? h('div', { class: 'mst-card' }, [
-                              sectionTitle(
-                                Icon,
-                                ctx.icons.iconCloud || ctx.icons.iconHeadphones,
-                                '音源与音质画像',
-                                '音源来源渠道与解码音质分布',
-                              ),
-                              h('div', { class: 'mst-donut-wrap' }, [
-                                renderDonut(h, sourceItems.items, sourceItems.total),
-                                renderSourceLegend(h, sourceItems.items, sourceItems.total),
-                              ]),
-                              data.qualities && data.qualities.length > 0
-                                ? renderQualityAndEffects(h, data.qualities, data.effects || [])
-                                : null,
-                            ])
-                          : null,
-                      ]),
-                    ],
-              ]),
-          }),
-        ]);
-      };
-    },
-  });
-};
-
 // ---- 报告页子渲染 ----
 
-const kpiCard = (h, label, value, icon, sub, pct, isSkip) =>
+const kpiCard = (h, RollingNumber, label, value, icon, sub, pct, isSkip) =>
   h('div', { class: 'mst-kpi' }, [
     h('div', { class: 'mst-kpi-top' }, [
       h('span', { class: 'mst-kpi-label' }, label),
       icon ? h('span', { class: 'mst-kpi-icon' }, icon) : null,
     ]),
-    h('div', { class: 'mst-kpi-value', title: String(value) }, value),
+    h('div', { class: 'mst-kpi-value', title: String(value) }, [
+      RollingNumber ? h(RollingNumber, { value }) : String(value),
+    ]),
     pct !== undefined
       ? h('div', { class: 'mst-kpi-meter' }, [
           h('div', {
@@ -3106,7 +3212,7 @@ const kpiCard = (h, label, value, icon, sub, pct, isSkip) =>
 const annualItem = (h, label, value) =>
   h('div', { class: 'mst-annual-item' }, [
     h('div', { class: 'mst-annual-item-label' }, label),
-    h('div', { class: 'mst-annual-item-value' }, value),
+    h('div', { class: 'mst-annual-item-value', title: String(value) }, value),
   ]);
 
 const buildSourceSegments = (rows) => {
@@ -3136,101 +3242,207 @@ const renderSourceLegend = (h, items, total) =>
     ),
   ]);
 
-const renderArtistBars = (h, rows) => {
+const renderArtistBars = (h, rows, onSelectArtist) => {
   if (!rows || rows.length === 0) {
-    return h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [
-      h('p', null, '暂无歌手数据'),
-    ]);
+    return h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [h('p', null, '暂无歌手数据')]);
   }
   const maxMs = Math.max(1, ...rows.map((r) => Number(r.ms) || 0));
   return h('div', { class: 'mst-bars' }, [
     ...rows.map((r, i) => {
       const ms = Number(r.ms) || 0;
       const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
-      return h('div', { class: 'mst-bar-row', key: String(r.artist) }, [
-        h('span', { class: ['mst-bar-rank', rankCls] }, String(i + 1)),
-        h('span', { class: 'mst-bar-name', title: String(r.artist) }, String(r.artist)),
-        h('div', { class: 'mst-bar-track' }, [
-          h('div', { class: 'mst-bar-fill', style: { width: `${Math.max(2, (ms / maxMs) * 100)}%` } }),
-        ]),
-        h('span', { class: 'mst-bar-val' }, formatMsShort(ms)),
-      ]);
+      return h(
+        'div',
+        {
+          class: ['mst-bar-row', onSelectArtist ? 'is-clickable' : ''],
+          key: String(r.artist),
+          title: `点击查看 ${r.artist} 的曲目排行与月度统计`,
+          onClick: () => {
+            if (typeof onSelectArtist === 'function') onSelectArtist(r);
+          },
+        },
+        [
+          h('span', { class: ['mst-bar-rank', rankCls] }, String(i + 1)),
+          h('span', { class: 'mst-bar-name', title: String(r.artist) }, String(r.artist)),
+          h('div', { class: 'mst-bar-track' }, [
+            h('div', { class: 'mst-bar-fill', style: { width: `${Math.max(2, (ms / maxMs) * 100)}%` } }),
+          ]),
+          h('span', { class: 'mst-bar-val' }, formatMsShort(ms)),
+          h('span', { class: 'mst-bar-chevron' }, [iconSvg(h, MST_ICONS.chevronRight, { size: 14 })]),
+        ],
+      );
     }),
   ]);
 };
 
-const renderSongList = (h, rows, ctx) =>
-  rows && rows.length > 0
-    ? h('div', { class: 'mst-songs-scroll' }, [
-        h('div', { class: 'mst-songs' }, [
-          ...rows.map((r, i) => {
-            const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
-            let metaText = `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`;
-            if (r.completion_rate !== undefined) {
-              metaText = `${Number(r.completed_count) || 0} 次完播 (${r.completion_rate}%) · ${formatMsShort(Number(r.ms) || 0)}`;
-            } else if (r.skip_rate !== undefined) {
-              metaText = `${Number(r.skipped_count) || 0} 次跳过 (${r.skip_rate}%) · ${Number(r.plays) || 0} 次尝试`;
-            }
+// 排行榜歌曲列表：严格采用双击播放 (onDblclick) + 显式矢量播放按钮 + 正在播放高亮 + 跨插件下载入口
+const renderSongList = (h, rows, ctx, options = {}) => {
+  const { activeTrackId = '', Popconfirm = null, showDownload = false } = options;
+  const canDownload = showDownload && hasDownloadBridge();
 
-            return h(
-              'div',
-              {
-                class: 'mst-song-row',
-                key: `${String(r.title)}-${String(r.artist)}-${i}`,
-                style: { cursor: r.track_id ? 'pointer' : 'default' },
-                title: r.track_id ? '点击播放此歌曲' : String(r.title),
-                onClick: () => {
-                  if (r.track_id) {
-                    if (ctx?.player?.playTrack) void ctx.player.playTrack(r.track_id);
-                    else if (ctx?.player?.play) void ctx.player.play(r.track_id);
-                  }
+  if (!rows || rows.length === 0) {
+    return h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [
+      h('p', null, '暂无该榜单维度的歌曲数据'),
+    ]);
+  }
+
+  return h('div', { class: 'mst-songs-scroll' }, [
+    h('div', { class: 'mst-songs' }, [
+      ...rows.map((r, i) => {
+        const rankCls = i === 0 ? 'mst-rank-1' : i === 1 ? 'mst-rank-2' : i === 2 ? 'mst-rank-3' : '';
+        const isActive = Boolean(activeTrackId && r.track_id && String(r.track_id) === String(activeTrackId));
+        let metaText = `${Number(r.plays) || 0} 次 · ${formatMsShort(Number(r.ms) || 0)}`;
+        if (r.completion_rate !== undefined) {
+          metaText = `${Number(r.completed_count) || 0} 次完播 (${r.completion_rate}%) · ${formatMsShort(Number(r.ms) || 0)}`;
+        } else if (r.skip_rate !== undefined) {
+          metaText = `${Number(r.skipped_count) || 0} 次跳过 (${r.skip_rate}%) · ${Number(r.plays) || 0} 次尝试`;
+        }
+
+        const downloadBtn = canDownload && r.track_id
+          ? Popconfirm
+            ? h(
+                Popconfirm,
+                {
+                  title: '加入歌曲下载队列？',
+                  description: `将《${r.title} - ${r.artist}》发送至歌曲下载插件`,
+                  confirmText: '加入下载',
+                  cancelText: '取消',
+                  side: 'left',
+                  onConfirm: () => void enqueueSingleDownload(ctx, r),
                 },
-              },
-              [
-                h('span', { class: ['mst-song-rank', rankCls] }, String(i + 1)),
-                h('div', { class: 'mst-song-main' }, [
-                  h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
-                  h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
-                ]),
-                h('span', { class: 'mst-song-meta' }, metaText),
-                r.track_id
-                  ? h(
-                      'div',
-                      { class: 'mst-song-play-icon', title: '试听' },
-                      [h('span', { style: 'font-size: 11px; margin-left: 2px;' }, '▶')],
-                    )
-                  : null,
-              ],
-            );
-          }),
-        ]),
-      ])
-    : h('div', { class: 'mst-state', style: 'padding: 36px 12px;' }, [
-        h('p', null, '暂无该榜单维度的歌曲数据'),
-      ]);
+                {
+                  trigger: () =>
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        class: 'mst-row-icon-btn',
+                        title: '下载此歌曲',
+                        'aria-label': `下载 ${r.title}`,
+                        onClick: (e) => e.stopPropagation(),
+                      },
+                      [iconSvg(h, MST_ICONS.download, { size: 14 })],
+                    ),
+                },
+              )
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'mst-row-icon-btn',
+                  title: '下载此歌曲',
+                  'aria-label': `下载 ${r.title}`,
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    void enqueueSingleDownload(ctx, r);
+                  },
+                },
+                [iconSvg(h, MST_ICONS.download, { size: 14 })],
+              )
+          : null;
 
-// ---- 设置面板 ----
+        return h(
+          'div',
+          {
+            class: ['mst-song-row', isActive ? 'is-active' : ''],
+            key: `${String(r.title)}-${String(r.artist)}-${i}`,
+            title: r.track_id ? '双击播放此歌曲' : String(r.title),
+            onDblclick: () => {
+              if (r.track_id) playTrackById(ctx, r.track_id);
+            },
+          },
+          [
+            h('span', { class: ['mst-song-rank', rankCls] }, String(i + 1)),
+            h('div', { class: 'mst-song-main' }, [
+              h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
+              h('span', { class: 'mst-song-artist', title: String(r.artist) }, String(r.artist)),
+            ]),
+            h('span', { class: 'mst-song-meta' }, metaText),
+            h('div', { class: 'mst-song-actions' }, [
+              downloadBtn,
+              r.track_id
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      class: 'mst-row-icon-btn is-play',
+                      title: '播放此歌曲',
+                      'aria-label': `播放 ${r.title}`,
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        playTrackById(ctx, r.track_id);
+                      },
+                    },
+                    [iconSvg(h, MST_ICONS.play, { size: 13 })],
+                  )
+                : null,
+            ]),
+          ],
+        );
+      }),
+    ]),
+  ]);
+};
+
+// ---- 设置面板（轻量原生组件，同时复用于插件设置页与报告页右侧设置抽屉） ----
 
 const createSettingsPanel = (ctx) => {
   const { h, defineComponent, ref, onMounted, onBeforeUnmount } = ctx.vue;
-  const Switch = ctx.vue.defineAsyncComponent(ctx.ui.components.Switch);
-  const Select = ctx.vue.defineAsyncComponent(ctx.ui.components.Select);
-  const Button = ctx.vue.defineAsyncComponent(ctx.ui.components.Button);
+  const Switch = loadHostComponent(ctx, 'Switch');
+  const Select = loadHostComponent(ctx, 'Select');
+  const Button = loadHostComponent(ctx, 'Button');
+  const Input = loadHostComponent(ctx, 'Input');
+  const Dialog = loadHostComponent(ctx, 'Dialog');
+  const Checkbox = loadHostComponent(ctx, 'Checkbox');
 
   return defineComponent({
     name: 'music-stats-settings',
-    setup() {
+    props: {
+      onDataChanged: { type: Function, default: null },
+    },
+    setup(props) {
       const loaded = ref(false);
       const enabled = ref(true);
       const minSeconds = ref(DEFAULT_MIN_SECONDS);
       const scrobblerEnabled = ref(false);
       const scrobblerUrl = ref('');
       const scrobblerToken = ref('');
-      const confirmClear = ref(false);
+      const scrobblerSaving = ref(false);
+      const testingScrobbler = ref(false);
       const busy = ref(false);
-      let clearTimer = null;
+
+      // 安全清空数据 Dialog 状态
+      const clearDialogOpen = ref(false);
+      const clearScope = ref('current'); // 'current' | 'all'
+      const backupBeforeClear = ref(true);
+      const clearing = ref(false);
+      const currentUser = ref(readCurrentUser(ctx));
+
+      let scrobblerSaveTimer = null;
+
+      const flushScrobblerSave = () => {
+        if (scrobblerSaveTimer) {
+          clearTimeout(scrobblerSaveTimer);
+          scrobblerSaveTimer = null;
+        }
+        const trimmedUrl = String(scrobblerUrl.value || '').trim();
+        const trimmedToken = String(scrobblerToken.value || '').trim();
+        settings.scrobblerUrl = trimmedUrl;
+        settings.scrobblerToken = trimmedToken;
+        void ctx.storage.set('scrobblerUrl', trimmedUrl).catch(() => {});
+        void ctx.storage.set('scrobblerToken', trimmedToken).catch(() => {});
+        scrobblerSaving.value = false;
+      };
+
+      const scheduleScrobblerSave = () => {
+        scrobblerSaving.value = true;
+        if (scrobblerSaveTimer) clearTimeout(scrobblerSaveTimer);
+        scrobblerSaveTimer = setTimeout(flushScrobblerSave, 450);
+      };
 
       onMounted(async () => {
+        currentUser.value = readCurrentUser(ctx);
+        clearScope.value = currentUser.value.userId ? 'current' : 'all';
         try {
           const rawEnabled = await ctx.storage.get('enabled');
           enabled.value = rawEnabled == null ? true : Boolean(rawEnabled);
@@ -3246,9 +3458,8 @@ const createSettingsPanel = (ctx) => {
       });
 
       onBeforeUnmount(() => {
-        if (clearTimer) {
-          clearTimeout(clearTimer);
-          clearTimer = null;
+        if (scrobblerSaveTimer) {
+          flushScrobblerSave();
         }
       });
 
@@ -3271,73 +3482,97 @@ const createSettingsPanel = (ctx) => {
         void ctx.storage.set('scrobblerEnabled', scrobblerEnabled.value).catch(() => {});
       };
 
-      const setScrobblerUrl = (value) => {
-        scrobblerUrl.value = String(value || '').trim();
-        settings.scrobblerUrl = scrobblerUrl.value;
-        void ctx.storage.set('scrobblerUrl', scrobblerUrl.value).catch(() => {});
+      const handleScrobblerUrlInput = (val) => {
+        scrobblerUrl.value = String(val ?? '');
+        scheduleScrobblerSave();
       };
 
-      const setScrobblerToken = (value) => {
-        scrobblerToken.value = String(value || '').trim();
-        settings.scrobblerToken = scrobblerToken.value;
-        void ctx.storage.set('scrobblerToken', scrobblerToken.value).catch(() => {});
+      const handleScrobblerTokenInput = (val) => {
+        scrobblerToken.value = String(val ?? '');
+        scheduleScrobblerSave();
       };
 
-      const handleClear = async () => {
-        if (!confirmClear.value) {
-          confirmClear.value = true;
-          clearTimer = setTimeout(() => {
-            confirmClear.value = false;
-            clearTimer = null;
-          }, 4000);
+      const testScrobblerConnection = async () => {
+        flushScrobblerSave();
+        const url = String(scrobblerUrl.value || '').trim();
+        if (!url || !/^https?:\/\//i.test(url)) {
+          ctx.toast.danger('请先输入有效的 http(s) Webhook URL');
           return;
         }
-        if (clearTimer) {
-          clearTimeout(clearTimer);
-          clearTimer = null;
-        }
-        confirmClear.value = false;
+        testingScrobbler.value = true;
         try {
-          const res = db ? await db.run('DELETE FROM plays') : { ok: false, error: '数据库未就绪' };
-          if (res.ok) ctx.toast.success('统计数据已清空');
-          else ctx.toast.danger('清空失败，请重试');
+          await postScrobblerRequest(ctx, url, String(scrobblerToken.value || '').trim(), {
+            test: true,
+            track: 'Connection Test',
+            artist: 'EchoMusic',
+            album: '',
+            duration: 180,
+            timestamp: Math.floor(Date.now() / 1000),
+            service: 'EchoMusic',
+          });
+          ctx.toast.success('Scrobbler 连通性测试成功');
+        } catch (err) {
+          console.warn('[music-stats] Scrobbler 测试连接失败:', err);
+          ctx.toast.danger(`连接测试失败：${err?.message || '请检查地址与网络'}`);
+        } finally {
+          testingScrobbler.value = false;
+        }
+      };
+
+      const openClearDialog = () => {
+        currentUser.value = readCurrentUser(ctx);
+        clearScope.value = currentUser.value.userId ? 'current' : 'all';
+        backupBeforeClear.value = true;
+        clearDialogOpen.value = true;
+      };
+
+      const executeClear = async () => {
+        if (!db) {
+          ctx.toast.danger('本地数据库未就绪');
+          return;
+        }
+        clearing.value = true;
+        try {
+          if (backupBeforeClear.value) {
+            const out = await exportBackupJson(ctx);
+            if (out?.canceled) {
+              ctx.toast.info('已取消备份，清空操作未执行');
+              return;
+            }
+          }
+          const uid = currentUser.value.userId;
+          let res;
+          if (clearScope.value === 'current' && uid) {
+            res = await db.run(`DELETE FROM plays WHERE user_id = ? OR user_id = ''`, [uid]);
+          } else {
+            res = await db.run('DELETE FROM plays');
+          }
+          if (res.ok) {
+            clearDialogOpen.value = false;
+            ctx.toast.success(
+              clearScope.value === 'current' && uid
+                ? '已清空当前账号的听歌统计数据'
+                : '已清空全部账号的听歌统计数据',
+            );
+            notifyReportDataChanged();
+            if (typeof props.onDataChanged === 'function') props.onDataChanged();
+          } else {
+            ctx.toast.danger('清空失败，请重试');
+          }
         } catch (error) {
           console.warn('[music-stats] 清空数据失败:', error);
           ctx.toast.danger('清空失败，请重试');
+        } finally {
+          clearing.value = false;
         }
       };
 
       const options = MIN_SECONDS_OPTIONS.map((v) => ({ label: `${v} 秒`, value: v }));
 
-      const exportData = async () => {
-        if (!db) {
-          ctx.toast.danger('本地数据库未就绪');
-          return;
-        }
+      const handleExportJson = async () => {
         busy.value = true;
         try {
-          const res = await db.all(QUERY_BACKUP);
-          if (!res.ok) throw new Error(res.error || '查询失败');
-          const rows = res.rows || [];
-          if (rows.length === 0) {
-            ctx.toast.danger('暂无数据可导出');
-            return;
-          }
-          const payload = JSON.stringify(
-            {
-              format: 'music-stats-backup',
-              version: 2,
-              exportedAt: new Date().toISOString(),
-              count: rows.length,
-              rows,
-            },
-            null,
-            2,
-          );
-          const filename = `music-stats-backup-${formatDay()}.json`;
-          const out = await exportFileToDiskOrBrowser(ctx, filename, payload, 'application/json');
-          if (out?.canceled) return;
-          ctx.toast.success(`已导出 ${rows.length} 条 JSON 记录（保存至：${out.displayPath}）`);
+          await exportBackupJson(ctx);
         } catch (error) {
           console.warn('[music-stats] 导出数据失败:', error);
           ctx.toast.danger('导出失败，请重试');
@@ -3346,52 +3581,10 @@ const createSettingsPanel = (ctx) => {
         }
       };
 
-      const exportCsv = async () => {
-        if (!db) {
-          ctx.toast.danger('本地数据库未就绪');
-          return;
-        }
+      const handleExportCsv = async () => {
         busy.value = true;
         try {
-          const res = await db.all('SELECT * FROM plays ORDER BY started_at ASC');
-          const rows = res.rows || [];
-          if (rows.length === 0) {
-            ctx.toast.danger('暂无数据可导出');
-            return;
-          }
-          const headers = [
-            'track_id',
-            'title',
-            'artist',
-            'album',
-            'source',
-            'duration',
-            'played_ms',
-            'started_at',
-            'day',
-            'month',
-            'hour',
-            'weekday',
-            'completed',
-            'skipped',
-            'quality',
-            'effect',
-            'user_id',
-          ];
-          const escapeCsv = (str) => `"${String(str ?? '').replace(/"/g, '""')}"`;
-          const lines = [headers.join(',')];
-          for (const r of rows) {
-            lines.push(headers.map((h) => escapeCsv(r[h])).join(','));
-          }
-          const filename = `music-stats-${formatDay()}.csv`;
-          const out = await exportFileToDiskOrBrowser(
-            ctx,
-            filename,
-            '\ufeff' + lines.join('\r\n'),
-            'text/csv;charset=utf-8;',
-          );
-          if (out?.canceled) return;
-          ctx.toast.success(`已导出 ${rows.length} 条记录为 CSV 表格（保存至：${out.displayPath}）`);
+          await exportBackupCsv(ctx);
         } catch (error) {
           console.warn('[music-stats] 导出 CSV 失败:', error);
           ctx.toast.danger('导出 CSV 失败');
@@ -3410,7 +3603,7 @@ const createSettingsPanel = (ctx) => {
           const res = await ctx.backups.create();
           if (res.ok) ctx.toast.success('已成功创建系统级备份');
           else ctx.toast.danger(res.error || '创建备份失败');
-        } catch (e) {
+        } catch {
           ctx.toast.danger('创建系统备份失败');
         } finally {
           busy.value = false;
@@ -3437,7 +3630,7 @@ const createSettingsPanel = (ctx) => {
         try {
           const parsed = JSON.parse(text);
           rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.rows) ? parsed.rows : null;
-        } catch (error) {
+        } catch {
           ctx.toast.danger('导入失败：文件不是有效的备份 JSON');
           return;
         }
@@ -3470,6 +3663,8 @@ const createSettingsPanel = (ctx) => {
           }
           const skippedText = skipped > 0 ? `，跳过 ${skipped} 条无效` : '';
           ctx.toast.success(`已导入 ${statements.length} 条记录（重复自动跳过）${skippedText}`);
+          notifyReportDataChanged();
+          if (typeof props.onDataChanged === 'function') props.onDataChanged();
         } catch (error) {
           console.warn('[music-stats] 导入数据失败:', error);
           ctx.toast.danger('导入失败，请重试');
@@ -3478,81 +3673,1312 @@ const createSettingsPanel = (ctx) => {
         }
       };
 
-      return () =>
-        h('div', { class: 'mst-settings' }, [
-          h('div', { class: 'mst-setting-row' }, [
-            h('div', { class: 'mst-setting-copy' }, [
-              h('div', { class: 'mst-setting-label' }, '启用统计'),
-              h('div', { class: 'mst-setting-hint' }, '关闭后停止记录新播放，已保存的历史保留'),
+      const renderButton = (btnProps, label) =>
+        Button
+          ? h(Button, btnProps, { default: () => label })
+          : h('button', { type: 'button', ...btnProps }, label);
+
+      return () => {
+        const hasAccount = Boolean(currentUser.value.userId);
+        const accountLabel = currentUser.value.nickname
+          ? `${currentUser.value.nickname} (${currentUser.value.userId})`
+          : currentUser.value.userId || '未登录';
+
+        return h('div', { class: 'mst-settings' }, [
+          // 采集配置组
+          h('div', { class: 'mst-settings-group' }, [
+            h('div', { class: 'mst-setting-row' }, [
+              h('div', { class: 'mst-setting-copy' }, [
+                h('div', { class: 'mst-setting-label' }, '启用统计'),
+                h('div', { class: 'mst-setting-hint' }, '关闭后停止记录新播放，已保存的历史保留'),
+              ]),
+              Switch
+                ? h(Switch, {
+                    modelValue: enabled.value,
+                    'onUpdate:modelValue': setEnabled,
+                    disabled: !loaded.value,
+                  })
+                : null,
             ]),
-            h(Switch, { modelValue: enabled.value, 'onUpdate:modelValue': setEnabled, disabled: !loaded.value }),
+            h('div', { class: 'mst-setting-row' }, [
+              h('div', { class: 'mst-setting-copy' }, [
+                h('div', { class: 'mst-setting-label' }, '最短计入时长'),
+                h('div', { class: 'mst-setting-hint' }, '实听时长低于该值且未完播的播放不计入'),
+              ]),
+              Select
+                ? h(Select, {
+                    modelValue: minSeconds.value,
+                    'onUpdate:modelValue': setMinSeconds,
+                    options,
+                    class: 'mst-setting-select',
+                    disabled: !loaded.value,
+                  })
+                : null,
+            ]),
           ]),
-          h('div', { class: 'mst-setting-row' }, [
-            h('div', { class: 'mst-setting-copy' }, [
-              h('div', { class: 'mst-setting-label' }, '最短计入时长'),
-              h('div', { class: 'mst-setting-hint' }, '实听时长低于该值的播放不计入'),
-            ]),
-            h(Select, {
-              modelValue: minSeconds.value,
-              'onUpdate:modelValue': setMinSeconds,
-              options,
-              class: 'mst-setting-select',
-              disabled: !loaded.value,
-            }),
-          ]),
-          h('div', { class: 'mst-setting-row' }, [
-            h('div', { class: 'mst-setting-copy' }, [
-              h('div', { class: 'mst-setting-label' }, '数据备份'),
-              h('div', { class: 'mst-setting-hint' }, '卸载插件会删除本机数据，卸载前建议先导出备份'),
-            ]),
-            h('div', { class: 'mst-backup-actions' }, [
-              h(Button, { size: 'sm', onClick: exportData, disabled: busy.value }, { default: () => '导出 JSON' }),
-              h(Button, { size: 'sm', variant: 'outline', onClick: exportCsv, disabled: busy.value }, { default: () => '导出 CSV' }),
-              h(Button, { size: 'sm', variant: 'outline', onClick: importData, disabled: busy.value }, { default: () => '导入 JSON' }),
-              ctx.backups ? h(Button, { size: 'sm', variant: 'ghost', onClick: createSystemBackup, disabled: busy.value }, { default: () => '系统备份' }) : null,
+
+          // 数据备份组
+          h('div', { class: 'mst-settings-group' }, [
+            h('div', { class: 'mst-setting-row' }, [
+              h('div', { class: 'mst-setting-copy' }, [
+                h('div', { class: 'mst-setting-label' }, '数据导出与导入'),
+                h('div', { class: 'mst-setting-hint' }, '卸载插件会清除本地数据库，建议定期导出 JSON 备份'),
+              ]),
+              h('div', { class: 'mst-backup-actions' }, [
+                renderButton({ size: 'sm', variant: 'soft-primary', onClick: handleExportJson, disabled: busy.value }, '导出 JSON'),
+                renderButton({ size: 'sm', variant: 'soft-secondary', onClick: handleExportCsv, disabled: busy.value }, '导出 CSV'),
+                renderButton({ size: 'sm', variant: 'soft-secondary', onClick: importData, disabled: busy.value }, '导入 JSON'),
+                ctx.backups
+                  ? renderButton({ size: 'sm', variant: 'ghost', onClick: createSystemBackup, disabled: busy.value }, '系统备份')
+                  : null,
+              ]),
             ]),
           ]),
-          h('div', { class: 'mst-setting-row' }, [
-            h('div', { class: 'mst-setting-copy' }, [
-              h('div', { class: 'mst-setting-label' }, 'Scrobbler 同步上报'),
-              h('div', { class: 'mst-setting-hint' }, '歌曲完播后自动向配置的 Webhook (Last.fm / ListenBrainz 网关) 提交播放记录'),
+
+          // Scrobbler 配置组
+          h('div', { class: 'mst-settings-group' }, [
+            h('div', { class: 'mst-setting-row' }, [
+              h('div', { class: 'mst-setting-copy' }, [
+                h('div', { class: 'mst-setting-label' }, 'Scrobbler 同步上报'),
+                h(
+                  'div',
+                  { class: 'mst-setting-hint' },
+                  '歌曲完播后向自定义 Webhook (Last.fm / ListenBrainz 网关) 提交记录',
+                ),
+              ]),
+              Switch
+                ? h(Switch, {
+                    modelValue: scrobblerEnabled.value,
+                    'onUpdate:modelValue': setScrobblerEnabled,
+                    disabled: !loaded.value,
+                  })
+                : null,
             ]),
-            h(Switch, { modelValue: scrobblerEnabled.value, 'onUpdate:modelValue': setScrobblerEnabled, disabled: !loaded.value }),
+            scrobblerEnabled.value
+              ? h('div', { class: 'mst-scrobbler-fields' }, [
+                  h('div', { class: 'mst-field-block' }, [
+                    h('label', { class: 'mst-field-label' }, 'Webhook URL'),
+                    Input
+                      ? h(Input, {
+                          modelValue: scrobblerUrl.value,
+                          'onUpdate:modelValue': handleScrobblerUrlInput,
+                          placeholder: 'https://api.listenbrainz.org/1/submit-listens 或自定义网关',
+                          size: 'compact',
+                        })
+                      : h('input', {
+                          type: 'text',
+                          class: 'mst-date-fallback',
+                          style: 'width: 100%;',
+                          value: scrobblerUrl.value,
+                          onInput: (e) => handleScrobblerUrlInput(e.target.value),
+                        }),
+                  ]),
+                  h('div', { class: 'mst-field-block' }, [
+                    h('label', { class: 'mst-field-label' }, 'User Token (可选)'),
+                    Input
+                      ? h(Input, {
+                          type: 'password',
+                          modelValue: scrobblerToken.value,
+                          'onUpdate:modelValue': handleScrobblerTokenInput,
+                          placeholder: '填入 Bearer API Token',
+                          size: 'compact',
+                        })
+                      : h('input', {
+                          type: 'password',
+                          class: 'mst-date-fallback',
+                          style: 'width: 100%;',
+                          value: scrobblerToken.value,
+                          onInput: (e) => handleScrobblerTokenInput(e.target.value),
+                        }),
+                  ]),
+                  h('div', { class: 'mst-scrobbler-footer' }, [
+                    h(
+                      'span',
+                      { class: 'mst-setting-hint' },
+                      scrobblerSaving.value ? '正在自动保存…' : '输入后自动防抖保存',
+                    ),
+                    renderButton(
+                      {
+                        size: 'sm',
+                        variant: 'soft-secondary',
+                        loading: testingScrobbler.value,
+                        disabled: testingScrobbler.value,
+                        onClick: testScrobblerConnection,
+                      },
+                      '测试连接',
+                    ),
+                  ]),
+                ])
+              : null,
           ]),
-          scrobblerEnabled.value
-            ? h('div', { class: 'mst-card', style: 'padding: 12px 14px;' }, [
-                h('div', { class: 'mst-card-sub', style: 'margin-bottom: 6px;' }, 'Scrobbler Webhook URL:'),
-                h('input', {
-                  type: 'text',
-                  class: 'mst-date-input',
-                  style: 'width: 100%; margin-bottom: 8px;',
-                  placeholder: 'https://api.listenbrainz.org/1/submit-listens 或自定义网关',
-                  value: scrobblerUrl.value,
-                  onInput: (e) => setScrobblerUrl(e.target.value),
-                }),
-                h('div', { class: 'mst-card-sub', style: 'margin-bottom: 6px;' }, 'User Token (可选):'),
-                h('input', {
-                  type: 'password',
-                  class: 'mst-date-input',
-                  style: 'width: 100%;',
-                  placeholder: '填入 API Token',
-                  value: scrobblerToken.value,
-                  onInput: (e) => setScrobblerToken(e.target.value),
-                }),
-              ])
+
+          // 危险区：通过原生 Dialog 进行分级清空
+          h('div', { class: 'mst-danger-group' }, [
+            h('div', { class: 'mst-setting-copy' }, [
+              h('div', { class: 'mst-setting-label' }, '清空统计数据'),
+              h('div', { class: 'mst-setting-hint' }, '支持仅清空当前账号或全部账号，清空前可自动导出 JSON 备份'),
+            ]),
+            renderButton(
+              { variant: 'danger', size: 'sm', onClick: openClearDialog },
+              '清空数据…',
+            ),
+          ]),
+
+          // 分级安全清理原生 Dialog
+          Dialog
+            ? h(
+                Dialog,
+                {
+                  open: clearDialogOpen.value,
+                  'onUpdate:open': (val) => {
+                    clearDialogOpen.value = Boolean(val);
+                  },
+                  title: '清空听歌统计数据',
+                  description: '删除后的播放记录无法从数据库恢复，请选择清理范围。',
+                  showClose: true,
+                },
+                {
+                  default: () =>
+                    h('div', null, [
+                      h('div', { class: 'mst-clear-options' }, [
+                        h(
+                          'div',
+                          {
+                            class: [
+                              'mst-radio-card',
+                              clearScope.value === 'current' ? 'is-selected' : '',
+                              !hasAccount ? 'is-disabled' : '',
+                            ],
+                            role: 'radio',
+                            'aria-checked': clearScope.value === 'current',
+                            onClick: () => {
+                              if (hasAccount) clearScope.value = 'current';
+                            },
+                          },
+                          [
+                            h('span', { class: 'mst-radio-dot' }, [
+                              clearScope.value === 'current' ? h('span', { class: 'mst-radio-dot-inner' }) : null,
+                            ]),
+                            h('div', { class: 'mst-setting-copy' }, [
+                              h('div', { class: 'mst-setting-label' }, '仅清空当前账号'),
+                              h(
+                                'div',
+                                { class: 'mst-setting-hint' },
+                                hasAccount ? `清理账号：${accountLabel} 的全部播放记录` : '当前未登录账号，请使用全部清理',
+                              ),
+                            ]),
+                          ],
+                        ),
+                        h(
+                          'div',
+                          {
+                            class: ['mst-radio-card', clearScope.value === 'all' ? 'is-selected' : ''],
+                            role: 'radio',
+                            'aria-checked': clearScope.value === 'all',
+                            onClick: () => {
+                              clearScope.value = 'all';
+                            },
+                          },
+                          [
+                            h('span', { class: 'mst-radio-dot' }, [
+                              clearScope.value === 'all' ? h('span', { class: 'mst-radio-dot-inner' }) : null,
+                            ]),
+                            h('div', { class: 'mst-setting-copy' }, [
+                              h('div', { class: 'mst-setting-label' }, '清空全部账号'),
+                              h('div', { class: 'mst-setting-hint' }, '删除本地 SQLite 数据库中的所有播放历史'),
+                            ]),
+                          ],
+                        ),
+                      ]),
+                      h(
+                        'label',
+                        {
+                          class: 'mst-backup-check-row',
+                          onClick: (e) => {
+                            if (!Checkbox) {
+                              e.preventDefault();
+                              backupBeforeClear.value = !backupBeforeClear.value;
+                            }
+                          },
+                        },
+                        [
+                          Checkbox
+                            ? h(Checkbox, {
+                                modelValue: backupBeforeClear.value,
+                                'onUpdate:modelValue': (v) => {
+                                  backupBeforeClear.value = Boolean(v);
+                                },
+                                ariaLabel: '清空前先导出 JSON 备份',
+                              })
+                            : h('input', {
+                                type: 'checkbox',
+                                checked: backupBeforeClear.value,
+                                onChange: (e) => {
+                                  backupBeforeClear.value = Boolean(e.target.checked);
+                                },
+                              }),
+                          h('span', null, '清空前先导出 JSON 备份（推荐）'),
+                        ],
+                      ),
+                    ]),
+                  footer: () => [
+                    renderButton(
+                      {
+                        variant: 'secondary',
+                        size: 'sm',
+                        disabled: clearing.value,
+                        onClick: () => {
+                          clearDialogOpen.value = false;
+                        },
+                      },
+                      '取消',
+                    ),
+                    renderButton(
+                      {
+                        variant: 'danger',
+                        size: 'sm',
+                        loading: clearing.value,
+                        disabled: clearing.value,
+                        onClick: executeClear,
+                      },
+                      backupBeforeClear.value ? '备份并清空' : '确认清空',
+                    ),
+                  ],
+                },
+              )
             : null,
-          h('div', { class: 'mst-danger-zone' }, [
-            h('div', { class: 'mst-setting-copy', style: { marginBottom: '12px' } }, [
-              h('div', { class: 'mst-setting-label' }, '清空数据'),
-              h('div', { class: 'mst-setting-hint' }, '删除全部播放记录，不可恢复'),
+        ]);
+      };
+    },
+  });
+};
+
+// ---- 报告页 ----
+
+const createReportPage = (ctx, SettingsPanelComp) => {
+  const { h, defineComponent, ref, computed, watch, onMounted, onBeforeUnmount, resolveComponent } =
+    ctx.vue;
+
+  const PageScrollContainer = loadHostComponent(ctx, 'PageScrollContainer');
+  const DetailPageSliverHeader = loadHostComponent(ctx, 'DetailPageSliverHeader');
+  const PageStickyHeader = loadHostComponent(ctx, 'PageStickyHeader');
+  const DatePicker = loadHostComponent(ctx, 'DatePicker');
+  const RollingNumber = loadHostComponent(ctx, 'RollingNumber');
+  const Drawer = loadHostComponent(ctx, 'Drawer');
+  const DrawerHeader = loadHostComponent(ctx, 'DrawerHeader');
+  const Popconfirm = loadHostComponent(ctx, 'Popconfirm');
+  const Button = loadHostComponent(ctx, 'Button');
+  const Tabs = loadHostComponent(ctx, 'Tabs');
+  const TabsList = loadHostComponent(ctx, 'TabsList');
+  const TabsTrigger = loadHostComponent(ctx, 'TabsTrigger');
+
+  const sectionTitle = (Icon, icon, title, sub, extra) =>
+    h('div', { class: 'mst-card-head' }, [
+      h('div', { class: 'mst-card-head-left' }, [
+        h('div', { class: 'mst-card-icon-pill' }, [h(Icon, { icon, width: 16, height: 16 })]),
+        h('div', null, [
+          h('h3', { class: 'mst-card-title' }, title),
+          sub ? h('p', { class: 'mst-card-sub' }, sub) : null,
+        ]),
+      ]),
+      extra || null,
+    ]);
+
+  return defineComponent({
+    name: 'music-stats-report',
+    setup() {
+      const Icon = resolveComponent('Icon');
+
+      const sliverHeaderRef = ref(null);
+      const stickyTop = computed(() => sliverHeaderRef.value?.currentHeight ?? 56);
+
+      const coverUrl = computed(() => {
+        if (ctx?.cover && typeof ctx.cover.createThemedIconCoverUrl === 'function') {
+          return ctx.cover.createThemedIconCoverUrl({
+            icon: ctx.icons?.iconPulse || ctx.icons?.iconMusic,
+          });
+        }
+        return '';
+      });
+
+      const activeTrackId = computed(() =>
+        String(ctx?.player?.currentTrackId?.value ?? ctx?.stores?.player?.currentTrackId ?? ''),
+      );
+
+      const range = ref('30d');
+      const accountScope = ref('current'); // 'current' | 'all'
+      const currentUser = ref(readCurrentUser(ctx));
+      const songTab = ref('top');
+      const customStart = ref('');
+      const customEnd = ref('');
+      const loading = ref(false);
+      const exporting = ref(false);
+      const error = ref('');
+      const report = ref(null);
+      const hoveredHeatmapDay = ref(null);
+
+      // 下钻 / 设置侧滑抽屉状态
+      const drawerOpen = ref(false);
+      const drawerMode = ref(''); // 'day' | 'artist' | 'settings'
+      const drawerTitle = ref('');
+      const drawerDesc = ref('');
+      const drawerLoading = ref(false);
+      const drawerDayPlays = ref([]);
+      const drawerArtistDetail = ref({ songs: [], monthly: [] });
+      const activeDayInfo = ref(null);
+
+      const customRangeError = computed(() => {
+        if (range.value !== 'custom') return '';
+        if (customStart.value && customEnd.value && customStart.value > customEnd.value) {
+          return '开始日期不能晚于结束日期';
+        }
+        return '';
+      });
+
+      const load = async () => {
+        if (!db) {
+          error.value = '本地数据库未就绪';
+          return;
+        }
+        if (customRangeError.value) {
+          return;
+        }
+        loading.value = true;
+        error.value = '';
+        currentUser.value = readCurrentUser(ctx);
+        try {
+          report.value = await queryReport(
+            db,
+            getRangeMs(range.value, customStart.value, customEnd.value),
+            trendGranularity(range.value),
+            {
+              userId: currentUser.value.userId,
+              scopeMode: accountScope.value,
+            },
+          );
+        } catch (err) {
+          console.warn('[music-stats] 查询报告失败:', err);
+          error.value = '读取统计失败，请稍后重试';
+        } finally {
+          loading.value = false;
+        }
+      };
+
+      const selectRange = (key) => {
+        if (key === 'custom' && (!customStart.value || !customEnd.value)) {
+          const def = getDefaultCustomRange();
+          customStart.value = def.start;
+          customEnd.value = def.end;
+        }
+        range.value = key;
+      };
+
+      const handleQuickExportJson = async () => {
+        exporting.value = true;
+        try {
+          await exportBackupJson(ctx);
+        } catch (err) {
+          console.warn('[music-stats] 导出 JSON 失败:', err);
+          ctx.toast.danger('导出 JSON 失败');
+        } finally {
+          exporting.value = false;
+        }
+      };
+
+      const handleQuickExportCsv = async () => {
+        exporting.value = true;
+        try {
+          await exportBackupCsv(ctx);
+        } catch (err) {
+          console.warn('[music-stats] 导出 CSV 失败:', err);
+          ctx.toast.danger('导出 CSV 失败');
+        } finally {
+          exporting.value = false;
+        }
+      };
+
+      const openDayDrawer = async (dayInfo) => {
+        if (!db || !dayInfo?.day) return;
+        activeDayInfo.value = dayInfo;
+        drawerMode.value = 'day';
+        drawerTitle.value = `${dayInfo.day} 播放流水`;
+        drawerDesc.value = `${dayInfo.weekday} · ${dayInfo.plays} 次播放 · 实听 ${formatMsShort(dayInfo.ms)}`;
+        drawerOpen.value = true;
+        drawerLoading.value = true;
+        drawerDayPlays.value = [];
+        try {
+          drawerDayPlays.value = await queryDayPlays(db, dayInfo.day, {
+            userId: currentUser.value.userId,
+            scopeMode: accountScope.value,
+          });
+        } catch (err) {
+          console.warn('[music-stats] 查询单日流水失败:', err);
+          ctx.toast.danger('读取当日播放流水失败');
+        } finally {
+          drawerLoading.value = false;
+        }
+      };
+
+      const handleDeleteDayPlay = async (playRow) => {
+        if (!db || playRow?.id == null) return;
+        try {
+          const res = await deletePlayById(db, playRow.id);
+          if (!res.ok) throw new Error(res.error || '删除失败');
+          drawerDayPlays.value = drawerDayPlays.value.filter((it) => it.id !== playRow.id);
+          const totalMs = drawerDayPlays.value.reduce((acc, it) => acc + (Number(it.played_ms) || 0), 0);
+          const weekday = activeDayInfo.value?.weekday || '';
+          drawerDesc.value = `${weekday} · ${drawerDayPlays.value.length} 次播放 · 实听 ${formatMsShort(totalMs)}`;
+          ctx.toast.success('已删除该条播放记录');
+          void load();
+        } catch (err) {
+          console.warn('[music-stats] 删除播放记录失败:', err);
+          ctx.toast.danger('删除失败，请重试');
+        }
+      };
+
+      const openArtistDrawer = async (artistRow) => {
+        if (!db || !artistRow?.artist) return;
+        const artist = String(artistRow.artist);
+        drawerMode.value = 'artist';
+        drawerTitle.value = artist;
+        drawerDesc.value = `区间内 ${Number(artistRow.plays) || 0} 次播放 · 实听 ${formatMsShort(Number(artistRow.ms) || 0)}`;
+        drawerOpen.value = true;
+        drawerLoading.value = true;
+        drawerArtistDetail.value = { songs: [], monthly: [] };
+        try {
+          drawerArtistDetail.value = await queryArtistDetail(
+            db,
+            artist,
+            getRangeMs(range.value, customStart.value, customEnd.value),
+            {
+              userId: currentUser.value.userId,
+              scopeMode: accountScope.value,
+            },
+          );
+        } catch (err) {
+          console.warn('[music-stats] 查询歌手详情失败:', err);
+          ctx.toast.danger('读取歌手详情失败');
+        } finally {
+          drawerLoading.value = false;
+        }
+      };
+
+      const openSettingsDrawer = () => {
+        drawerMode.value = 'settings';
+        drawerTitle.value = '听歌统计设置';
+        drawerDesc.value = '采集规则、备份导出、Scrobbler 与数据清理';
+        drawerOpen.value = true;
+      };
+
+      let unsubscribeUser = null;
+
+      onMounted(() => {
+        reportRefreshListeners.add(load);
+        void load();
+        // 监听多账号切换（支持 EchoMusic v2.3.2+ 多账号会话隔离，卸载时严格释放订阅）
+        try {
+          const userStore = ctx.pinia?._s?.get('user');
+          if (userStore && typeof userStore.$subscribe === 'function') {
+            let lastUid = String(userStore.info?.userid ?? userStore.info?.userId ?? '');
+            let lastRev = Number(userStore.accountRevision || 0);
+            unsubscribeUser = userStore.$subscribe(() => {
+              const curUid = String(userStore.info?.userid ?? userStore.info?.userId ?? '');
+              const curRev = Number(userStore.accountRevision || 0);
+              if (curUid !== lastUid || curRev !== lastRev) {
+                lastUid = curUid;
+                lastRev = curRev;
+                currentUser.value = readCurrentUser(ctx);
+                void load();
+              }
+            });
+          }
+        } catch {}
+      });
+
+      onBeforeUnmount(() => {
+        reportRefreshListeners.delete(load);
+        if (typeof unsubscribeUser === 'function') {
+          try {
+            unsubscribeUser();
+          } catch {}
+          unsubscribeUser = null;
+        }
+      });
+
+      watch(range, () => {
+        if (!customRangeError.value) void load();
+      });
+      watch(accountScope, load);
+      watch([customStart, customEnd], () => {
+        if (range.value === 'custom' && customStart.value && customEnd.value && !customRangeError.value) {
+          void load();
+        }
+      });
+
+      const renderDrawerContent = () => {
+        if (drawerMode.value === 'settings') {
+          return h('div', { class: 'mst-drawer-body' }, [
+            SettingsPanelComp ? h(SettingsPanelComp, { onDataChanged: load }) : null,
+          ]);
+        }
+
+        if (drawerLoading.value) {
+          return h('div', { class: 'mst-drawer-body' }, [
+            h('div', { class: 'mst-state' }, [
+              h(Icon, { icon: ctx.icons.iconRefreshCw, width: 28, height: 28, class: 'mst-spin' }),
+              h('p', null, '正在加载明细…'),
             ]),
-            h(Button, {
-              variant: confirmClear.value ? 'danger' : 'outline',
-              size: 'sm',
-              onClick: handleClear,
-            }, { default: () => (confirmClear.value ? '再次点击确认清空' : '清空数据') }),
+          ]);
+        }
+
+        if (drawerMode.value === 'day') {
+          const rows = drawerDayPlays.value;
+          if (!rows.length) {
+            return h('div', { class: 'mst-drawer-body' }, [
+              h('div', { class: 'mst-state' }, [h('p', null, '当日暂无播放记录')]),
+            ]);
+          }
+          return h('div', { class: 'mst-drawer-body' }, [
+            h('div', { class: 'mst-drawer-list' }, [
+              ...rows.map((r) =>
+                h('div', { class: 'mst-drawer-row', key: r.id ?? `${r.track_id}-${r.started_at}` }, [
+                  h('span', { class: 'mst-drawer-time' }, formatTimeHm(r.started_at)),
+                  h('div', { class: 'mst-song-main' }, [
+                    h('span', { class: 'mst-song-title', title: String(r.title) }, String(r.title)),
+                    h(
+                      'span',
+                      { class: 'mst-song-artist', title: `${r.artist}${r.album ? ` · ${r.album}` : ''}` },
+                      `${r.artist} · 实听 ${formatDurationClock(r.played_ms)}`,
+                    ),
+                  ]),
+                  Number(r.completed) === 1
+                    ? h('span', { class: 'mst-drawer-tag is-completed' }, '完播')
+                    : Number(r.skipped) === 1
+                      ? h('span', { class: 'mst-drawer-tag is-skipped' }, '跳过')
+                      : null,
+                  r.track_id
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          class: 'mst-row-icon-btn is-play',
+                          title: '播放',
+                          'aria-label': `播放 ${r.title}`,
+                          onClick: () => playTrackById(ctx, r.track_id),
+                        },
+                        [iconSvg(h, MST_ICONS.play, { size: 13 })],
+                      )
+                    : null,
+                  Popconfirm
+                    ? h(
+                        Popconfirm,
+                        {
+                          title: '删除此条播放记录？',
+                          description: '将从本地统计中永久移除该记录（适合清理挂机或误播记录）',
+                          tone: 'danger',
+                          confirmText: '删除',
+                          cancelText: '取消',
+                          side: 'left',
+                          onConfirm: () => void handleDeleteDayPlay(r),
+                        },
+                        {
+                          trigger: () =>
+                            h(
+                              'button',
+                              {
+                                type: 'button',
+                                class: 'mst-row-icon-btn is-danger',
+                                title: '删除记录',
+                                'aria-label': `删除 ${r.title} 的播放记录`,
+                              },
+                              [iconSvg(h, MST_ICONS.trash, { size: 13 })],
+                            ),
+                        },
+                      )
+                    : h(
+                        'button',
+                        {
+                          type: 'button',
+                          class: 'mst-row-icon-btn is-danger',
+                          title: '删除记录',
+                          onClick: () => void handleDeleteDayPlay(r),
+                        },
+                        [iconSvg(h, MST_ICONS.trash, { size: 13 })],
+                      ),
+                ]),
+              ),
+            ]),
+          ]);
+        }
+
+        if (drawerMode.value === 'artist') {
+          const { songs, monthly } = drawerArtistDetail.value;
+          const maxMonthPlays = Math.max(1, ...monthly.map((m) => Number(m.plays) || 0));
+          return h('div', { class: 'mst-drawer-body' }, [
+            monthly.length > 0
+              ? h('div', null, [
+                  h('h4', { class: 'mst-drawer-section-title' }, '近期月度收听汇总'),
+                  h('div', { class: 'mst-artist-months' }, [
+                    ...monthly.map((m) =>
+                      h('div', { class: 'mst-artist-month-row', key: m.month }, [
+                        h('span', { class: 'mst-bar-name', style: 'font-size: 12px;' }, String(m.month)),
+                        h('div', { class: 'mst-bar-track' }, [
+                          h('div', {
+                            class: 'mst-bar-fill',
+                            style: { width: `${Math.max(4, ((Number(m.plays) || 0) / maxMonthPlays) * 100)}%` },
+                          }),
+                        ]),
+                        h('span', { class: 'mst-bar-val' }, `${Number(m.plays) || 0} 次 · ${formatMsShort(m.ms)}`),
+                      ]),
+                    ),
+                  ]),
+                ])
+              : null,
+            h('div', null, [
+              h('h4', { class: 'mst-drawer-section-title' }, `区间热门曲目 (${songs.length})`),
+              renderSongList(h, songs, ctx, {
+                activeTrackId: activeTrackId.value,
+                Popconfirm,
+                showDownload: true,
+              }),
+            ]),
+          ]);
+        }
+
+        return null;
+      };
+
+      const renderButton = (btnProps, children) =>
+        Button
+          ? h(Button, btnProps, { default: () => children })
+          : h('button', { type: 'button', ...btnProps }, children);
+
+      return () => {
+        const data = report.value;
+        const isEmpty = !data || !data.kpi || Number(data.kpi.n) === 0;
+        const isMonthly = range.value === 'year' || range.value === 'all';
+        const todayStr = formatDay();
+
+        // 年度报告派生
+        let annual = null;
+        if (data && !isEmpty && range.value === 'year') {
+          const kpi = data.kpi;
+          const topArtist = data.topArtists[0];
+          const topSong = data.topSongs[0];
+          const activeMonth = mostActiveMonth(data.trend);
+          annual = {
+            totalMs: Number(kpi.ms) || 0,
+            totalPlays: Number(kpi.n) || 0,
+            topArtist: topArtist ? String(topArtist.artist) : '',
+            topSong: topSong ? `${String(topSong.title)} · ${String(topSong.artist)}` : '',
+            activeMonth: activeMonth ? activeMonth.month : '',
+            avgPerDay: (Number(kpi.ms) || 0) / daysElapsedThisYear(),
+          };
+        }
+
+        const sourceItems = data ? buildSourceSegments(data.sources) : { items: [], total: 0 };
+
+        const accountScopeLabel =
+          accountScope.value === 'all'
+            ? '全部账号合并视图'
+            : currentUser.value.nickname
+              ? `当前账号：${currentUser.value.nickname}`
+              : currentUser.value.userId
+                ? `当前账号：${currentUser.value.userId}`
+                : '当前账号视图';
+
+        const headerNode = DetailPageSliverHeader
+          ? h(
+              DetailPageSliverHeader,
+              {
+                ref: sliverHeaderRef,
+                typeLabel: 'STATS',
+                title: '听歌统计',
+                coverUrl: coverUrl.value,
+                hasDetails: true,
+                distributeDetails: true,
+                expandedHeight: 176,
+                collapsedHeight: 56,
+              },
+              {
+                details: () =>
+                  h('div', { class: 'mst-sliver-details' }, [
+                    h('div', { class: 'mst-sliver-meta-line' }, [
+                      h('span', { class: 'mst-sliver-pill' }, [
+                        h(Icon, { icon: ctx.icons.iconShield || ctx.icons.iconCheck, width: 12, height: 12 }),
+                        h('span', null, '纯本地 SQLite · 零隐私上传'),
+                      ]),
+                      h('span', null, accountScopeLabel),
+                    ]),
+                    h(
+                      'div',
+                      { class: 'mst-sliver-meta-line' },
+                      data && !isEmpty
+                        ? `当前区间：${Number(data.kpi.n) || 0} 次播放 · 实听 ${formatMsShort(data.kpi.ms)} · ${Number(data.kpi.songs) || 0} 首曲目 · ${Number(data.kpi.artists) || 0} 位歌手`
+                        : '自动静默采集播放足迹，点击热力图与歌手排行可下钻查看明细',
+                    ),
+                  ]),
+                actions: () =>
+                  h('div', { class: 'mst-sliver-actions' }, [
+                    renderButton(
+                      {
+                        variant: 'soft-primary',
+                        size: 'sm',
+                        disabled: loading.value,
+                        onClick: load,
+                      },
+                      h('span', { class: 'mst-btn-inner' }, [
+                        h(Icon, {
+                          icon: ctx.icons.iconRefreshCw,
+                          width: 14,
+                          height: 14,
+                          class: loading.value ? 'mst-spin' : '',
+                        }),
+                        h('span', null, '刷新'),
+                      ]),
+                    ),
+                    renderButton(
+                      {
+                        variant: 'soft-secondary',
+                        size: 'sm',
+                        disabled: exporting.value,
+                        onClick: handleQuickExportJson,
+                      },
+                      '导出 JSON',
+                    ),
+                    renderButton(
+                      {
+                        variant: 'soft-secondary',
+                        size: 'sm',
+                        disabled: exporting.value,
+                        onClick: handleQuickExportCsv,
+                      },
+                      '导出 CSV',
+                    ),
+                    renderButton(
+                      {
+                        variant: 'ghost',
+                        size: 'icon',
+                        tooltip: '听歌统计设置',
+                        onClick: openSettingsDrawer,
+                      },
+                      h(Icon, { icon: ctx.icons.iconSettings || ctx.icons.iconSlidersHorizontal, width: 16, height: 16 }),
+                    ),
+                  ]),
+                'collapsed-actions': () => [
+                  renderButton(
+                    {
+                      variant: 'ghost',
+                      size: 'icon',
+                      class: 'action-icon',
+                      tooltip: '刷新统计',
+                      onClick: load,
+                    },
+                    h(Icon, {
+                      icon: ctx.icons.iconRefreshCw,
+                      width: 16,
+                      height: 16,
+                      class: loading.value ? 'mst-spin' : '',
+                    }),
+                  ),
+                  renderButton(
+                    {
+                      variant: 'ghost',
+                      size: 'icon',
+                      class: 'action-icon',
+                      tooltip: '导出 JSON',
+                      onClick: handleQuickExportJson,
+                    },
+                    h(Icon, { icon: ctx.icons.iconArrowBarToDown || ctx.icons.iconUpload, width: 16, height: 16 }),
+                  ),
+                  renderButton(
+                    {
+                      variant: 'ghost',
+                      size: 'icon',
+                      class: 'action-icon',
+                      tooltip: '听歌统计设置',
+                      onClick: openSettingsDrawer,
+                    },
+                    h(Icon, { icon: ctx.icons.iconSettings || ctx.icons.iconSlidersHorizontal, width: 16, height: 16 }),
+                  ),
+                ],
+              },
+            )
+          : null;
+
+        const stickyBarContent = h('div', { class: 'mst-sticky-inner' }, [
+          h('div', { class: 'mst-sticky-row' }, [
+            h('div', { class: 'mst-filter-group', role: 'tablist', 'aria-label': '时间范围' }, [
+              ...RANGE_OPTIONS.map((opt) =>
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    key: opt.key,
+                    class: ['mst-filter-btn', range.value === opt.key ? 'active' : ''],
+                    onClick: () => selectRange(opt.key),
+                  },
+                  opt.label,
+                ),
+              ),
+            ]),
+            h('div', { class: 'mst-scope-group', title: '切换当前登录账号或全部账号合并统计' }, [
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: ['mst-filter-btn', accountScope.value === 'current' ? 'active' : ''],
+                  onClick: () => {
+                    accountScope.value = 'current';
+                  },
+                },
+                currentUser.value.nickname
+                  ? `当前账号 (${currentUser.value.nickname})`
+                  : '当前账号',
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  class: ['mst-filter-btn', accountScope.value === 'all' ? 'active' : ''],
+                  onClick: () => {
+                    accountScope.value = 'all';
+                  },
+                },
+                '全部账号',
+              ),
+            ]),
           ]),
         ]);
+
+        const stickyNode = PageStickyHeader
+          ? h(
+              PageStickyHeader,
+              {
+                stickyTop: stickyTop.value,
+                class: 'song-list-sticky mst-sticky-bar',
+                style: { top: `${stickyTop.value}px` },
+              },
+              { default: () => stickyBarContent },
+            )
+          : h('div', { class: 'mst-sticky-bar' }, [stickyBarContent]);
+
+        const songSubTabsNode =
+          Tabs && TabsList && TabsTrigger
+            ? h('div', { class: 'mst-song-tabs-bar' }, [
+                h(
+                  Tabs,
+                  {
+                    modelValue: songTab.value,
+                    'onUpdate:modelValue': (val) => {
+                      songTab.value = String(val || 'top');
+                    },
+                  },
+                  {
+                    default: () =>
+                      h(TabsList, { class: 'mst-song-tabs-list' }, {
+                        default: () => [
+                          h(TabsTrigger, { value: 'top' }, { default: () => `Top 播放 (${data.topSongs.length})` }),
+                          h(
+                            TabsTrigger,
+                            { value: 'completed' },
+                            { default: () => `最耐听 (${(data.completedSongs || []).length})` },
+                          ),
+                          h(
+                            TabsTrigger,
+                            { value: 'skipped' },
+                            { default: () => `常切 (${(data.skippedSongs || []).length})` },
+                          ),
+                        ],
+                      }),
+                  },
+                ),
+              ])
+            : h('div', { class: 'mst-filter-group', style: 'margin-bottom: 10px;' }, [
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: ['mst-filter-btn', songTab.value === 'top' ? 'active' : ''],
+                    onClick: () => {
+                      songTab.value = 'top';
+                    },
+                  },
+                  `Top 播放 (${data.topSongs.length})`,
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: ['mst-filter-btn', songTab.value === 'completed' ? 'active' : ''],
+                    onClick: () => {
+                      songTab.value = 'completed';
+                    },
+                  },
+                  `最耐听 (${(data.completedSongs || []).length})`,
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: ['mst-filter-btn', songTab.value === 'skipped' ? 'active' : ''],
+                    onClick: () => {
+                      songTab.value = 'skipped';
+                    },
+                  },
+                  `常切 (${(data.skippedSongs || []).length})`,
+                ),
+              ]);
+
+        const bodyContent = h('div', { class: 'mst-page' }, [
+          // 自定义日期选择条（原生 DatePicker + 预填近 30 天 + start <= end 校验）
+          range.value === 'custom'
+            ? h('div', { class: 'mst-custom-range' }, [
+                h('span', { class: 'mst-custom-label' }, '自定义时间区间：'),
+                h('div', { class: 'mst-date-picker-box' }, [
+                  DatePicker
+                    ? h(DatePicker, {
+                        modelValue: customStart.value,
+                        'onUpdate:modelValue': (val) => {
+                          customStart.value = String(val || '');
+                        },
+                        max: customEnd.value || todayStr,
+                        size: 'compact',
+                        placeholder: '开始日期',
+                        ariaLabel: '开始日期',
+                      })
+                    : h('input', {
+                        type: 'date',
+                        class: 'mst-date-fallback',
+                        value: customStart.value,
+                        max: customEnd.value || todayStr,
+                        onChange: (e) => {
+                          customStart.value = e.target.value;
+                        },
+                      }),
+                ]),
+                h('span', { class: 'mst-custom-label' }, '至'),
+                h('div', { class: 'mst-date-picker-box' }, [
+                  DatePicker
+                    ? h(DatePicker, {
+                        modelValue: customEnd.value,
+                        'onUpdate:modelValue': (val) => {
+                          customEnd.value = String(val || '');
+                        },
+                        min: customStart.value || undefined,
+                        max: todayStr,
+                        size: 'compact',
+                        placeholder: '结束日期',
+                        ariaLabel: '结束日期',
+                      })
+                    : h('input', {
+                        type: 'date',
+                        class: 'mst-date-fallback',
+                        value: customEnd.value,
+                        min: customStart.value || undefined,
+                        max: todayStr,
+                        onChange: (e) => {
+                          customEnd.value = e.target.value;
+                        },
+                      }),
+                ]),
+                renderButton(
+                  {
+                    variant: 'soft-primary',
+                    size: 'sm',
+                    disabled: Boolean(customRangeError.value) || loading.value,
+                    onClick: load,
+                  },
+                  '应用筛选',
+                ),
+                customRangeError.value ? h('span', { class: 'mst-custom-error' }, customRangeError.value) : null,
+              ])
+            : null,
+
+          loading.value && !data
+            ? h('div', { class: 'mst-card' }, [
+                h('div', { class: 'mst-state' }, [
+                  h(Icon, {
+                    icon: ctx.icons.iconRefreshCw,
+                    width: 32,
+                    height: 32,
+                    class: 'mst-spin',
+                    style: 'color: var(--color-primary-text);',
+                  }),
+                  h('p', null, '正在深入解析听歌数据…'),
+                ]),
+              ])
+            : error.value && !data
+              ? h('div', { class: 'mst-card' }, [
+                  h('div', { class: 'mst-state' }, [
+                    h(Icon, {
+                      icon: ctx.icons.iconTriangleAlert || ctx.icons.iconInfo,
+                      width: 40,
+                      height: 40,
+                      style: 'color: var(--state-danger, #ef4444);',
+                    }),
+                    h('p', null, error.value),
+                  ]),
+                ])
+              : isEmpty
+                ? h('div', { class: 'mst-card' }, [
+                    h('div', { class: 'mst-state' }, [
+                      h(Icon, { icon: ctx.icons.iconMusic, width: 48, height: 48, style: 'opacity: 0.45;' }),
+                      h('p', null, '所选时间区间内暂无听歌记录，放首歌静静聆听吧'),
+                    ]),
+                  ])
+                : [
+                    // 年度报告摘要（选择「今年」时展示）
+                    annual
+                      ? h('div', { class: 'mst-annual' }, [
+                          h('div', { class: 'mst-annual-head' }, [
+                            h('div', { class: 'mst-annual-head-left' }, [
+                              h(Icon, { icon: ctx.icons.iconSparkles || ctx.icons.iconStar, width: 20, height: 20 }),
+                              h('h2', { class: 'mst-annual-title' }, '年度音乐足迹报告'),
+                            ]),
+                            h('span', { class: 'mst-annual-badge' }, `${new Date().getFullYear()} 年度专属`),
+                          ]),
+                          h('div', { class: 'mst-annual-grid' }, [
+                            annualItem(h, '年度实听总时长', formatMsShort(annual.totalMs)),
+                            annualItem(h, '年度总播放次数', `${annual.totalPlays} 次`),
+                            annualItem(h, '年度最爱歌手', annual.topArtist || '—'),
+                            annualItem(h, '年度最爱单曲', annual.topSong || '—'),
+                            annualItem(h, '最活跃音乐月份', annual.activeMonth ? `${annual.activeMonth} 月` : '—'),
+                            annualItem(h, '日均听歌时长', formatMsShort(annual.avgPerDay)),
+                          ]),
+                        ])
+                      : null,
+
+                    // KPI 核心指标（接入宿主原生 RollingNumber）
+                    (() => {
+                      const totalPlays = Number(data.kpi.n) || 0;
+                      const compCount = Number(data.kpi.completed_count) || 0;
+                      const skipCount = Number(data.kpi.skipped_count) || 0;
+                      const compPct = totalPlays > 0 ? Math.round((compCount / totalPlays) * 100) : 0;
+                      const skipPct = totalPlays > 0 ? Math.round((skipCount / totalPlays) * 100) : 0;
+
+                      return h('div', { class: 'mst-kpis' }, [
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '累计听歌时长',
+                          formatMsShort(Number(data.kpi.ms) || 0),
+                          iconSvg(h, MST_ICONS.clock, { size: 14 }),
+                          '有效实听时长',
+                        ),
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '累计播放次数',
+                          `${totalPlays} 次`,
+                          iconSvg(h, MST_ICONS.music, { size: 14 }),
+                          '达标计入次数',
+                        ),
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '完播率',
+                          `${compPct}%`,
+                          iconSvg(h, MST_ICONS.headphones, { size: 14 }),
+                          `${compCount} 次完整听完`,
+                          compPct,
+                          false,
+                        ),
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '切歌跳过率',
+                          `${skipPct}%`,
+                          iconSvg(h, MST_ICONS.skip, { size: 14 }),
+                          `${skipCount} 次快速跳过`,
+                          skipPct,
+                          true,
+                        ),
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '去重曲目',
+                          `${Number(data.kpi.songs) || 0} 首`,
+                          iconSvg(h, MST_ICONS.music, { size: 14 }),
+                          '收听不同单曲',
+                        ),
+                        kpiCard(
+                          h,
+                          RollingNumber,
+                          '去重歌手',
+                          `${Number(data.kpi.artists) || 0} 位`,
+                          iconSvg(h, MST_ICONS.user, { size: 14 }),
+                          '探索音乐人谱系',
+                        ),
+                      ]);
+                    })(),
+
+                    // 单日循环神曲 & 深夜灵魂单曲
+                    renderHighlights(h, data.loopSong, data.nightSong, ctx),
+
+                    // 卡片网格区
+                    h('div', { class: 'mst-grid' }, [
+                      // 365天听歌热力图（点击任意日期打开右侧流水抽屉）
+                      data.heatmap && data.heatmap.length > 0
+                        ? h('div', { class: 'mst-card mst-full' }, [
+                            sectionTitle(
+                              Icon,
+                              ctx.icons.iconCalendar || ctx.icons.iconClock,
+                              '365天听歌足迹热力图',
+                              '点击任意日期方格可展开当日播放流水并清理异常记录',
+                            ),
+                            renderHeatmapChart(h, data.heatmap, hoveredHeatmapDay, openDayDrawer),
+                          ])
+                        : null,
+
+                      // 24小时音乐生物钟
+                      h('div', { class: 'mst-card mst-full' }, [
+                        sectionTitle(
+                          Icon,
+                          ctx.icons.iconClock,
+                          '24小时音乐生物钟',
+                          '晨起、工作、黄昏、深夜四大时段的听歌节奏与活跃峰值',
+                        ),
+                        renderCircadianClock(h, data.hours),
+                      ]),
+
+                      // 听歌个性成就徽章（带进度条）
+                      h('div', { class: 'mst-card mst-full' }, [
+                        sectionTitle(
+                          Icon,
+                          ctx.icons.iconTrophy || ctx.icons.iconStar,
+                          '听歌画像成就徽章',
+                          '深度挖掘你的音乐习惯与行为数据，实时追踪每枚勋章达成进度',
+                        ),
+                        renderBadges(h, data),
+                      ]),
+
+                      // 听歌时长趋势
+                      data.trend.length > 0
+                        ? h('div', { class: 'mst-card mst-full' }, [
+                            sectionTitle(
+                              Icon,
+                              ctx.icons.iconPulse || ctx.icons.iconClock,
+                              '听歌时长趋势',
+                              isMonthly ? '按月份聚合统计实听时长' : '按日期聚合统计实听时长',
+                            ),
+                            h('div', { class: 'mst-chart-scroll' }, [renderTrendChart(h, data.trend)]),
+                          ])
+                        : null,
+
+                      // Top 歌手（点击歌手行下钻抽屉）
+                      data.topArtists.length > 0
+                        ? h('div', { class: 'mst-card' }, [
+                            sectionTitle(
+                              Icon,
+                              ctx.icons.iconUsers || ctx.icons.iconTrophy,
+                              'Top 歌手排行',
+                              '按区间内累计有效实听时长降序 · 点击歌手查看曲目与月度趋势',
+                            ),
+                            renderArtistBars(h, data.topArtists, openArtistDrawer),
+                          ])
+                        : null,
+
+                      // Top 歌曲（原生 Tabs + 双击播放 + 显式矢量播放与下载图标）
+                      h('div', { class: 'mst-card' }, [
+                        sectionTitle(
+                          Icon,
+                          ctx.icons.iconMusic,
+                          '歌曲榜单与完播分析',
+                          songTab.value === 'top'
+                            ? '双击歌曲行或点击右侧播放图标即可试听'
+                            : songTab.value === 'completed'
+                              ? '最常听完的单曲榜（完播率 85% 以上）'
+                              : '最容易被跳过的单曲（播放低于 15 秒被切歌）',
+                        ),
+                        songSubTabsNode,
+                        renderSongList(
+                          h,
+                          songTab.value === 'top'
+                            ? data.topSongs
+                            : songTab.value === 'completed'
+                              ? data.completedSongs || []
+                              : data.skippedSongs || [],
+                          ctx,
+                          {
+                            activeTrackId: activeTrackId.value,
+                            Popconfirm,
+                            showDownload: songTab.value === 'top',
+                          },
+                        ),
+                      ]),
+
+                      // 每日 24 时段分布
+                      h('div', { class: 'mst-card' }, [
+                        sectionTitle(
+                          Icon,
+                          ctx.icons.iconClock,
+                          '每日 24 时段分布',
+                          '按 0–23 点各时段历史播放次数统计分布',
+                        ),
+                        h('div', { class: 'mst-chart-scroll' }, [renderHourChart(h, data.hours)]),
+                      ]),
+
+                      // 音源占比与音质画像
+                      sourceItems.total > 0
+                        ? h('div', { class: 'mst-card' }, [
+                            sectionTitle(
+                              Icon,
+                              ctx.icons.iconCloud || ctx.icons.iconHeadphones,
+                              '音源与音质画像',
+                              '音源来源渠道与解码音质分布',
+                            ),
+                            h('div', { class: 'mst-donut-wrap' }, [
+                              renderDonut(h, sourceItems.items, sourceItems.total),
+                              renderSourceLegend(h, sourceItems.items, sourceItems.total),
+                            ]),
+                            data.qualities && data.qualities.length > 0
+                              ? renderQualityAndEffects(h, data.qualities, data.effects || [])
+                              : null,
+                          ])
+                        : null,
+                    ]),
+                  ],
+        ]);
+
+        const scrollInner = [headerNode, stickyNode, bodyContent];
+
+        return h('div', { class: 'mst-root' }, [
+          PageScrollContainer
+            ? h(PageScrollContainer, { class: 'mst-scroll' }, { default: () => scrollInner })
+            : h('div', { class: 'mst-scroll', style: 'overflow-y: auto;' }, scrollInner),
+
+          // 右侧下钻 / 设置原生 Drawer
+          Drawer
+            ? h(
+                Drawer,
+                {
+                  open: drawerOpen.value,
+                  'onUpdate:open': (val) => {
+                    drawerOpen.value = Boolean(val);
+                  },
+                  side: 'right',
+                  title: drawerTitle.value,
+                  panelStyle: { width: drawerMode.value === 'settings' ? 'min(520px, 92vw)' : 'min(480px, 90vw)' },
+                },
+                {
+                  default: () => [
+                    DrawerHeader
+                      ? h(DrawerHeader, {
+                          title: drawerTitle.value,
+                          description: drawerDesc.value,
+                          onClose: () => {
+                            drawerOpen.value = false;
+                          },
+                        })
+                      : null,
+                    renderDrawerContent(),
+                  ],
+                },
+              )
+            : null,
+        ]);
+      };
     },
   });
 };
@@ -3598,22 +5024,24 @@ export async function activate(ctx) {
   // 说明：EchoMusic 宿主备份 (ctx.backups) 原生会自动将本插件的 SQLite 数据库 (plays) 与 KV 存储打包进备份包中，
   // 无需注册空壳 registerProvider（registerProvider 仅用于扩展 WebDAV 等外部云存储后端）。
 
+  const SettingsPanelComp = createSettingsPanel(ctx);
+
   // 报告页 + 侧边栏入口
   ctx.ui.addPage({
     id: 'report',
     title: '听歌统计',
     icon: ctx.icons.iconPulse,
-    component: createReportPage(ctx),
+    component: createReportPage(ctx, SettingsPanelComp),
     order: 20,
     sidebar: true,
   });
 
-  // 设置面板
+  // 设置面板（独立轻量面板，绝不嵌套 PageScrollContainer）
   ctx.ui.settings.define({
     id: 'music-stats',
     title: '听歌统计',
-    description: '采集开关、最短计入时长与数据清空',
-    component: createSettingsPanel(ctx),
+    description: '采集开关、最短计入时长、数据备份、Scrobbler 与分级清空',
+    component: SettingsPanelComp,
   });
 
   // 命令
@@ -3624,9 +5052,10 @@ export async function activate(ctx) {
   );
 
   disposeAll = async () => {
-    await settleCurrent();
+    await settleCurrent(ctx);
     current = null;
     db = null;
+    reportRefreshListeners.clear();
   };
 }
 
